@@ -67,11 +67,11 @@ final readonly class InertiaResponse
 
     /**
      * Assembles the page object: the keys `component`, `props`, `url` and `version`, plus
-     * `deferredProps` when this is not a partial reload and at least one `DeferProp` is
-     * declared, plus the merge lists (`mergeProps`, `prependProps`, `deepMergeProps`,
+     * `deferredProps` (a group name → keys object) when this is not a partial reload and at
+     * least one `DeferProp` is declared, plus the merge lists (`mergeProps`, `prependProps`, `deepMergeProps`,
      * `matchPropsOn`) that apply — the shape both `asJson()` and `asHtml()` serialize verbatim.
      *
-     * @return array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: array<string, list<string>>, mergeProps?: list<string>, prependProps?: list<string>, deepMergeProps?: list<string>, matchPropsOn?: list<string>}
+     * @return array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: object, mergeProps?: list<string>, prependProps?: list<string>, deepMergeProps?: list<string>, matchPropsOn?: list<string>}
      */
     private function buildPageObject(IncomingRequest $request): array
     {
@@ -83,7 +83,8 @@ final readonly class InertiaResponse
         ];
 
         $deferred = $this->isPartialReloadForThisComponent($request) ? [] : $this->deferredPropKeysByGroup();
-        $page     = $deferred === [] ? $page : [...$page, 'deferredProps' => $deferred];
+        // An object, so integer-like group names stay a JSON map instead of collapsing into a list.
+        $page = $deferred === [] ? $page : [...$page, 'deferredProps' => (object) $deferred];
 
         return array_merge($page, $this->mergeMetadata($request));
     }
@@ -293,7 +294,7 @@ final readonly class InertiaResponse
      * Serializes the page object as the JSON response an Inertia-aware client expects,
      * marking it with the `X-Inertia: true` header the protocol contract requires.
      *
-     * @param array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: array<string, list<string>>, mergeProps?: list<string>, prependProps?: list<string>, deepMergeProps?: list<string>, matchPropsOn?: list<string>} $page The page object built by `buildPageObject()`.
+     * @param array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: object, mergeProps?: list<string>, prependProps?: list<string>, deepMergeProps?: list<string>, matchPropsOn?: list<string>} $page The page object built by `buildPageObject()`.
      */
     private function asJson(ResponseInterface $response, array $page): ResponseInterface
     {
@@ -307,7 +308,7 @@ final readonly class InertiaResponse
      * Renders the root view shell with the page object embedded, HTML-attribute-escaped,
      * in `data-page` — the entry point for a first visit or a hard reload.
      *
-     * @param array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: array<string, list<string>>, mergeProps?: list<string>, prependProps?: list<string>, deepMergeProps?: list<string>, matchPropsOn?: list<string>} $page The page object built by `buildPageObject()`.
+     * @param array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: object, mergeProps?: list<string>, prependProps?: list<string>, deepMergeProps?: list<string>, matchPropsOn?: list<string>} $page The page object built by `buildPageObject()`.
      */
     private function asHtml(ResponseInterface $response, array $page): ResponseInterface
     {

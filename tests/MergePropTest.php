@@ -17,6 +17,7 @@ use Ejklock\Ci4Inertia\MergeProp;
 use Ejklock\Ci4Inertia\MergeState;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use TypeError;
 
 /**
  * Verifies `MergeProp`: its resolution, its immutable mode switching, and the merge lists
@@ -175,6 +176,26 @@ final class MergePropTest extends CIUnitTestCase
         $this->expectException(InvalidArgumentException::class);
 
         (new DeferProp(static fn (): int => 1))->matchOn('');
+    }
+
+    /**
+     * @psalm-suppress InvalidArgument the string is the invalid input under test
+     */
+    public function testAStringMergeModeIsATypeError(): void
+    {
+        $this->expectException(TypeError::class);
+
+        new MergeProp([1], 'append'); // @phpstan-ignore argument.type
+    }
+
+    /**
+     * @psalm-suppress InvalidArgument the string is the invalid input under test
+     */
+    public function testAStringMergeModeOnADeferPropIsATypeError(): void
+    {
+        $this->expectException(TypeError::class);
+
+        new DeferProp(static fn (): int => 1, 'g', 'deep'); // @phpstan-ignore argument.type
     }
 
     public function testMergeStateKeepsAValidListOfFields(): void

@@ -24,10 +24,9 @@ final readonly class MergeProp implements ResolvableProp
      * @param array<array-key, mixed>|Closure $value An array is returned as-is on resolve; a
      *                                               `Closure` is invoked on resolve and never
      *                                               before.
-     * @param MergeState|null                 $state Set by the fluent methods; append mode
-     *                                               without match fields when `null`.
-     *
-     * @internal The `$state` parameter is not part of the public API.
+     * @param MergeState|null                 $state Internal, not part of the public API: set by
+     *                                               the fluent methods; append mode without
+     *                                               match fields when `null`.
      */
     public function __construct(private array|Closure $value, ?MergeState $state = null)
     {

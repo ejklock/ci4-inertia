@@ -28,10 +28,8 @@ final readonly class DeferProp implements ResolvableProp
      *                                    called. Never invoked at construction time.
      * @param string          $group      The name the client batches this prop's follow-up request
      *                                    under; props sharing a group load together.
-     * @param MergeState|null $mergeState Set by the fluent methods; `null` while the prop is not
-     *                                    mergeable.
-     *
-     * @internal The `$mergeState` parameter is not part of the public API.
+     * @param MergeState|null $mergeState Internal, not part of the public API: set by the fluent
+     *                                    methods; `null` while the prop is not mergeable.
      *
      * @throws InvalidArgumentException When the group is empty or whitespace only.
      */

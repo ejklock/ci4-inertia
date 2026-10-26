@@ -445,6 +445,55 @@ final class InertiaResponseTest extends CIUnitTestCase
         $this->assertSame([], $result['invoked']);
     }
 
+    /**
+     * @param array<array-key, mixed> $props
+     */
+    #[DataProvider('provideDeferredPropsSerializeAsAnObjectKeyedByGroup')]
+    public function testDeferredPropsSerializeAsAnObjectKeyedByGroup(array $props, string $expected): void
+    {
+        $inertia = new InertiaResponse('Settings/Index', $props, 'v1', self::SHELL_VIEW);
+
+        $json = (string) preg_replace('/\s+/', '', (string) $inertia
+            ->toResponse($this->makeRequest('settings', ['X-Inertia' => 'true']), $this->makeResponse())
+            ->getBody());
+        $html = html_entity_decode(
+            (string) $inertia->toResponse($this->makeRequest('settings'), $this->makeResponse())->getBody(),
+            ENT_QUOTES | ENT_HTML5,
+        );
+
+        $this->assertStringContainsString($expected, $json);
+        $this->assertStringContainsString($expected, $html);
+    }
+
+    public static function provideDeferredPropsSerializeAsAnObjectKeyedByGroup(): iterable
+    {
+        $defer = static fn (string $group = 'default'): DeferProp => new DeferProp(static fn (): string => 'X', $group);
+
+        yield 'integer-like group' => [['a' => $defer('0')], '"deferredProps":{"0":["a"]}'];
+
+        yield 'contiguous integer-like groups' => [
+            ['a' => $defer('0'), 'b' => $defer('1')],
+            '"deferredProps":{"0":["a"],"1":["b"]}',
+        ];
+
+        yield 'named group' => [['a' => $defer()], '"deferredProps":{"default":["a"]}'];
+
+        yield 'integer-like prop key' => [[1 => $defer()], '"deferredProps":{"default":["1"]}'];
+    }
+
+    public function testPageWithoutADeferPropHasNoDeferredPropsKeyInEitherForm(): void
+    {
+        $inertia = new InertiaResponse('Settings/Index', ['a' => 1], 'v1', self::SHELL_VIEW);
+
+        $json = (string) $inertia
+            ->toResponse($this->makeRequest('settings', ['X-Inertia' => 'true']), $this->makeResponse())
+            ->getBody();
+        $html = (string) $inertia->toResponse($this->makeRequest('settings'), $this->makeResponse())->getBody();
+
+        $this->assertStringNotContainsString('deferredProps', $json);
+        $this->assertStringNotContainsString('deferredProps', $html);
+    }
+
     public function testPageWithoutDeferredPropsKeepsExactlyTheFourPageKeys(): void
     {
         $inertia = new InertiaResponse('Users/Index', ['a' => 1], 'v1', self::SHELL_VIEW);
