@@ -9,15 +9,14 @@ use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\ResponseInterface;
 use CodeIgniter\HTTP\SiteURI;
 use CodeIgniter\HTTP\UserAgent;
-use CodeIgniter\Session\Handlers\ArrayHandler;
 use CodeIgniter\Test\CIUnitTestCase;
-use CodeIgniter\Test\Mock\MockSession;
 use Config\App as AppConfig;
 use Config\Services;
 use Ejklock\Ci4Inertia\Config\Inertia as InertiaConfig;
 use Ejklock\Ci4Inertia\LazyProp;
 use Ejklock\Ci4Inertia\ResponseFactory;
 use InvalidArgumentException;
+use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\Attributes\DataProvider;
 use stdClass;
 
@@ -34,6 +33,13 @@ use stdClass;
  */
 final class ResponseFactoryTest extends CIUnitTestCase
 {
+    private bool $sessionGlobalExisted = false;
+
+    /**
+     * @var array<array-key, mixed>
+     */
+    private array $sessionGlobalBefore = [];
+
     /**
      * @param array<string, string> $headers
      */
@@ -340,11 +346,24 @@ final class ResponseFactoryTest extends CIUnitTestCase
         }
     }
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->sessionGlobalExisted = isset($_SESSION);
+        $this->sessionGlobalBefore  = $_SESSION ?? [];
+    }
+
     protected function tearDown(): void
     {
         Services::resetSingle('session');
         service('superglobals')->setGlobalArray('cookie', []);
-        $_SESSION = [];
+
+        if ($this->sessionGlobalExisted) {
+            $_SESSION = $this->sessionGlobalBefore;
+        } else {
+            unset($_SESSION);
+        }
 
         parent::tearDown();
     }
@@ -464,46 +483,40 @@ final class ResponseFactoryTest extends CIUnitTestCase
 
     public function testHistoryRenderWithoutReasonNeverTouchesTheSession(): void
     {
-        $config  = config('Session');
-        $session = new class (new ArrayHandler($config, '0.0.0.0'), $config) extends MockSession {
-            /**
-             * @var list<string>
-             */
-            public array $calls = [];
-
-            public function has(string $key): bool
+        Services::injectMock('session', new class () {
+            public function __call(string $name, array $arguments): never
             {
-                $this->calls[] = 'has';
-
-                return parent::has($key);
+                Assert::fail("The session service was used through {$name}().");
             }
 
-            public function get(?string $key = null)
+            public function __get(string $name): never
             {
-                $this->calls[] = 'get';
-
-                return parent::get($key);
+                Assert::fail("The session service was read through property {$name}.");
             }
 
-            public function set($data, $value = null)
+            public function __set(string $name, mixed $value): never
             {
-                $this->calls[] = 'set';
-
-                parent::set($data, $value);
+                Assert::fail("The session service was written through property {$name}.");
             }
 
-            public function remove($key)
+            public function __isset(string $name): never
             {
-                $this->calls[] = 'remove';
-
-                parent::remove($key);
+                Assert::fail("The session service was probed through property {$name}.");
             }
-        };
-        Services::injectMock('session', $session);
+
+            public function __unset(string $name): never
+            {
+                Assert::fail("The session service was unset through property {$name}.");
+            }
+
+            public function __invoke(): never
+            {
+                Assert::fail('The session service was invoked.');
+            }
+        });
 
         $page = $this->renderPageObject($this->newFactory(), 'Users/Index');
 
         $this->assertSame('Users/Index', $page['component']);
-        $this->assertSame([], $session->calls);
     }
 }
