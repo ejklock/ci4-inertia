@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-26
+
 ### Added
 
 - Inertia protocol v2 server adapter for CodeIgniter 4: `service('inertia')` returns the `ResponseFactory`, whose `render()` answers an Inertia request with the page object as JSON and any other request with the root view.
@@ -20,4 +22,5 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - History encryption (`encryptHistory` setting, `ResponseFactory::encryptHistory()`) and one-shot history clearing (`ResponseFactory::clearHistory()`).
 - Test helpers `InertiaTestTrait` and `AssertableInertia` for feature tests.
 
-[Unreleased]: https://github.com/ejklock/ci4-inertia/commits/main
+[Unreleased]: https://github.com/ejklock/ci4-inertia/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/ejklock/ci4-inertia/releases/tag/v0.1.0
