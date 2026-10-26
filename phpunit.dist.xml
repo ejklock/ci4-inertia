@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+    bootstrap="vendor/codeigniter4/framework/system/Test/bootstrap.php"
+    backupGlobals="false"
+    beStrictAboutOutputDuringTests="true"
+    colors="true"
+    columns="max"
+    failOnRisky="true"
+    failOnWarning="true"
+    cacheDirectory="build/.phpunit.cache"
+>
+    <coverage pathCoverage="false" ignoreDeprecatedCodeUnits="true">
+        <report>
+            <clover outputFile="build/logs/clover.xml"/>
+            <text outputFile="php://stdout" showUncoveredFiles="false"/>
+        </report>
+    </coverage>
+
+    <testsuites>
+        <testsuite name="Package">
+            <directory>./tests</directory>
+            <exclude>./tests/Architecture</exclude>
+        </testsuite>
+    </testsuites>
+
+    <source>
+        <include>
+            <directory suffix=".php">./src</directory>
+        </include>
+    </source>
+
+    <php>
+        <server name="app.baseURL" value="http://example.com/"/>
+        <env name="APP_BASE_URL" value="" force="true"/>
+        <server name="CODEIGNITER_SCREAM_DEPRECATIONS" value="0"/>
+    </php>
+</phpunit>

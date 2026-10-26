@@ -1,0 +1,475 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Ejklock\Ci4Inertia\Tests;
+
+use CodeIgniter\HTTP\IncomingRequest;
+use CodeIgniter\HTTP\ResponseInterface;
+use CodeIgniter\HTTP\SiteURI;
+use CodeIgniter\HTTP\UserAgent;
+use CodeIgniter\Test\CIUnitTestCase;
+use Config\App as AppConfig;
+use Ejklock\Ci4Inertia\AlwaysProp;
+use Ejklock\Ci4Inertia\InertiaResponse;
+use Ejklock\Ci4Inertia\LazyProp;
+use Ejklock\Ci4Inertia\OptionalProp;
+use PHPUnit\Framework\Attributes\DataProvider;
+
+/**
+ * Verifies `InertiaResponse` against the protocol contract in docs/architecture/inertia.md:
+ * the page object's four keys and their values, the `X-Inertia` header as the sole
+ * content-negotiation signal between the HTML shell and the JSON body, URL
+ * normalization, and partial-reload prop filtering including the guarantee that an
+ * unrequested `LazyProp` callback is never invoked, and `AlwaysProp`'s bypass of that same
+ * filtering so a shared prop like `errors` survives every partial reload.
+ *
+ * @internal
+ */
+final class InertiaResponseTest extends CIUnitTestCase
+{
+    private const SHELL_VIEW = 'Ejklock\Ci4InertiaTestSupport\Views\shell';
+
+    /**
+     * @param array<string, string> $headers
+     */
+    private function makeRequest(string $path = '', array $headers = []): IncomingRequest
+    {
+        $config  = config(AppConfig::class);
+        $request = new IncomingRequest($config, new SiteURI($config, $path), null, new UserAgent());
+
+        foreach ($headers as $name => $value) {
+            $request->setHeader($name, $value);
+        }
+
+        return $request;
+    }
+
+    /**
+     * @psalm-suppress InvalidNullableReturnType, NullableReturnStatement the framework's service() docblock admits null
+     */
+    private function makeResponse(): ResponseInterface
+    {
+        return service('response', null, false);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function decodeDataPageAttribute(string $html): array
+    {
+        preg_match('/data-page="([^"]*)"/', $html, $matches);
+
+        return json_decode(html_entity_decode($matches[1], ENT_QUOTES | ENT_HTML5), true, flags: JSON_THROW_ON_ERROR);
+    }
+
+    public function testNonInertiaRequestRendersHtmlShellWithDataPageKeys(): void
+    {
+        $inertia = new InertiaResponse('Users/Index', ['users' => ['a', 'b']], 'v1', self::SHELL_VIEW);
+
+        $response = $inertia->toResponse($this->makeRequest('users'), $this->makeResponse());
+        $html     = (string) $response->getBody();
+
+        $page = $this->decodeDataPageAttribute($html);
+
+        $this->assertSame(['component', 'props', 'url', 'version'], array_keys($page));
+        $this->assertSame('Users/Index', $page['component']);
+    }
+
+    public function testNonInertiaRequestDoesNotSendXInertiaHeader(): void
+    {
+        $inertia = new InertiaResponse('Users/Index', [], 'v1', self::SHELL_VIEW);
+
+        $response = $inertia->toResponse($this->makeRequest('users'), $this->makeResponse());
+
+        $this->assertFalse($response->hasHeader('X-Inertia'));
+    }
+
+    public function testInertiaRequestReturnsJsonPageObjectWithNoHtmlWrapper(): void
+    {
+        $inertia = new InertiaResponse('Users/Index', ['users' => ['a', 'b']], 'v1', self::SHELL_VIEW);
+
+        $response = $inertia->toResponse(
+            $this->makeRequest('users', ['X-Inertia' => 'true']),
+            $this->makeResponse(),
+        );
+
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertSame('true', $response->getHeaderLine('X-Inertia'));
+
+        $page = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame([
+            'component' => 'Users/Index',
+            'props'     => ['users' => ['a', 'b']],
+            'url'       => '/users',
+            'version'   => 'v1',
+        ], $page);
+    }
+
+    public function testPageUrlPreservesLeadingSlashAndQueryString(): void
+    {
+        $inertia = new InertiaResponse('Users/Index', [], 'v1', self::SHELL_VIEW);
+
+        $response = $inertia->toResponse(
+            $this->makeRequest('users/index?status=open', ['X-Inertia' => 'true']),
+            $this->makeResponse(),
+        );
+
+        $page = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame('/users/index?status=open', $page['url']);
+    }
+
+    public function testPartialReloadAllowListResolvesOnlyRequestedPropsAndNeverInvokesTheRest(): void
+    {
+        $countsInvoked = false;
+        $props         = [
+            'users'  => ['a', 'b'],
+            'counts' => new LazyProp(static function () use (&$countsInvoked) {
+                $countsInvoked = true;
+
+                return ['open' => 3];
+            }),
+        ];
+
+        $inertia = new InertiaResponse('Users/Index', $props, 'v1', self::SHELL_VIEW);
+
+        $response = $inertia->toResponse(
+            $this->makeRequest('users', [
+                'X-Inertia'                   => 'true',
+                'X-Inertia-Partial-Component' => 'Users/Index',
+                'X-Inertia-Partial-Data'      => 'users',
+            ]),
+            $this->makeResponse(),
+        );
+
+        $page = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertArrayHasKey('users', $page['props']);
+        $this->assertArrayNotHasKey('counts', $page['props']);
+        $this->assertFalse($countsInvoked);
+    }
+
+    public function testPartialReloadExceptListRemovesNamedPropsAndNeverInvokesThem(): void
+    {
+        $countsInvoked = false;
+        $props         = [
+            'users'  => ['a', 'b'],
+            'counts' => new LazyProp(static function () use (&$countsInvoked) {
+                $countsInvoked = true;
+
+                return ['open' => 3];
+            }),
+        ];
+
+        $inertia = new InertiaResponse('Users/Index', $props, 'v1', self::SHELL_VIEW);
+
+        $response = $inertia->toResponse(
+            $this->makeRequest('users', [
+                'X-Inertia'                   => 'true',
+                'X-Inertia-Partial-Component' => 'Users/Index',
+                'X-Inertia-Partial-Except'    => 'counts',
+            ]),
+            $this->makeResponse(),
+        );
+
+        $page = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertArrayHasKey('users', $page['props']);
+        $this->assertArrayNotHasKey('counts', $page['props']);
+        $this->assertFalse($countsInvoked);
+    }
+
+    public function testPartialHeadersAreIgnoredWhenComponentDoesNotMatch(): void
+    {
+        $countsInvoked = false;
+        $props         = [
+            'users'  => ['a', 'b'],
+            'counts' => new LazyProp(static function () use (&$countsInvoked) {
+                $countsInvoked = true;
+
+                return ['open' => 3];
+            }),
+        ];
+
+        $inertia = new InertiaResponse('Users/Index', $props, 'v1', self::SHELL_VIEW);
+
+        $response = $inertia->toResponse(
+            $this->makeRequest('users', [
+                'X-Inertia'                   => 'true',
+                'X-Inertia-Partial-Component' => 'Settings/Index',
+                'X-Inertia-Partial-Data'      => 'users',
+            ]),
+            $this->makeResponse(),
+        );
+
+        $page = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertArrayHasKey('users', $page['props']);
+        $this->assertArrayHasKey('counts', $page['props']);
+        $this->assertTrue($countsInvoked);
+    }
+
+    public function testAlwaysPropIsPresentOnPartialReloadThatDidNotRequestIt(): void
+    {
+        $props = [
+            'users'  => ['a', 'b'],
+            'errors' => new AlwaysProp(static fn () => (object) []),
+        ];
+
+        $inertia = new InertiaResponse('Users/Index', $props, 'v1', self::SHELL_VIEW);
+
+        $response = $inertia->toResponse(
+            $this->makeRequest('users', [
+                'X-Inertia'                   => 'true',
+                'X-Inertia-Partial-Component' => 'Users/Index',
+                'X-Inertia-Partial-Data'      => 'users',
+            ]),
+            $this->makeResponse(),
+        );
+
+        $page = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertArrayHasKey('users', $page['props']);
+        $this->assertArrayHasKey('errors', $page['props']);
+        $this->assertSame([], $page['props']['errors']);
+    }
+
+    public function testAlwaysPropRemainsPresentWhenListedInPartialExcept(): void
+    {
+        $errorsInvoked = false;
+        $props         = [
+            'users'  => ['a', 'b'],
+            'errors' => new AlwaysProp(static function () use (&$errorsInvoked) {
+                $errorsInvoked = true;
+
+                return ['title' => 'is required'];
+            }),
+        ];
+
+        $inertia = new InertiaResponse('Users/Index', $props, 'v1', self::SHELL_VIEW);
+
+        $response = $inertia->toResponse(
+            $this->makeRequest('users', [
+                'X-Inertia'                   => 'true',
+                'X-Inertia-Partial-Component' => 'Users/Index',
+                'X-Inertia-Partial-Except'    => 'errors',
+            ]),
+            $this->makeResponse(),
+        );
+
+        $page = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertArrayHasKey('errors', $page['props']);
+        $this->assertSame(['title' => 'is required'], $page['props']['errors']);
+        $this->assertTrue($errorsInvoked);
+    }
+
+    public function testAlwaysPropResolvesNormallyOnFullRender(): void
+    {
+        $props = [
+            'users'  => ['a', 'b'],
+            'errors' => new AlwaysProp(static fn () => (object) []),
+        ];
+
+        $inertia = new InertiaResponse('Users/Index', $props, 'v1', self::SHELL_VIEW);
+
+        $response = $inertia->toResponse(
+            $this->makeRequest('users', ['X-Inertia' => 'true']),
+            $this->makeResponse(),
+        );
+
+        $page = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertArrayHasKey('errors', $page['props']);
+        $this->assertSame([], $page['props']['errors']);
+    }
+
+    /**
+     * Renders a page holding one plain prop and one optional prop for the request headers, and
+     * reports the props sent and how many times the optional prop's callback ran.
+     *
+     * @param array<string, string> $headers
+     *
+     * @return array{props: array<string, mixed>, invocations: int}
+     */
+    private function renderWithOptionalProp(array $headers): array
+    {
+        $invocations = 0;
+        $props       = [
+            'users' => ['a', 'b'],
+            'posts' => new OptionalProp(static function () use (&$invocations) {
+                $invocations++;
+
+                return ['available' => true];
+            }),
+        ];
+
+        $response = (new InertiaResponse('Settings/Index', $props, 'v1', self::SHELL_VIEW))->toResponse(
+            $this->makeRequest('settings', ['X-Inertia' => 'true', ...$headers]),
+            $this->makeResponse(),
+        );
+        $page = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        return ['props' => $page['props'], 'invocations' => $invocations];
+    }
+
+    public function testOptionalPropIsLeftOutOfAFullRenderAndNeverInvoked(): void
+    {
+        $result = $this->renderWithOptionalProp([]);
+
+        $this->assertSame(['users'], array_keys($result['props']));
+        $this->assertSame(0, $result['invocations']);
+    }
+
+    public function testOptionalPropIsSentAndInvokedOnceWhenAPartialReloadNamesIt(): void
+    {
+        $result = $this->renderWithOptionalProp([
+            'X-Inertia-Partial-Component' => 'Settings/Index',
+            'X-Inertia-Partial-Data'      => 'posts',
+        ]);
+
+        $this->assertSame(['posts' => ['available' => true]], $result['props']);
+        $this->assertSame(1, $result['invocations']);
+    }
+
+    public function testOptionalPropIsLeftOutOfAPartialReloadNamingOnlyOtherProps(): void
+    {
+        $result = $this->renderWithOptionalProp([
+            'X-Inertia-Partial-Component' => 'Settings/Index',
+            'X-Inertia-Partial-Data'      => 'users',
+        ]);
+
+        $this->assertSame(['users'], array_keys($result['props']));
+        $this->assertSame(0, $result['invocations']);
+    }
+
+    public function testOptionalPropIsLeftOutWhenAPartialReloadNamesItAndExceptsIt(): void
+    {
+        $result = $this->renderWithOptionalProp([
+            'X-Inertia-Partial-Component' => 'Settings/Index',
+            'X-Inertia-Partial-Data'      => 'users,posts',
+            'X-Inertia-Partial-Except'    => 'posts',
+        ]);
+
+        $this->assertSame(['users'], array_keys($result['props']));
+        $this->assertSame(0, $result['invocations']);
+    }
+
+    public function testOptionalPropIsLeftOutOfAPartialReloadForAnotherComponent(): void
+    {
+        $result = $this->renderWithOptionalProp([
+            'X-Inertia-Partial-Component' => 'Users/Index',
+            'X-Inertia-Partial-Data'      => 'posts',
+        ]);
+
+        $this->assertSame(['users'], array_keys($result['props']));
+        $this->assertSame(0, $result['invocations']);
+    }
+
+    public function testOptionalPropIsLeftOutOfAPartialReloadWithNoDataHeader(): void
+    {
+        $result = $this->renderWithOptionalProp(['X-Inertia-Partial-Component' => 'Settings/Index']);
+
+        $this->assertSame(['users'], array_keys($result['props']));
+        $this->assertSame(0, $result['invocations']);
+    }
+
+    public function testAttributeEscapingPreventsBreakingOutOfDataPageAttribute(): void
+    {
+        $hostileValue = '"><script>alert(1)</script>&\'';
+
+        $inertia = new InertiaResponse('Users/Index', ['note' => $hostileValue], 'v1', self::SHELL_VIEW);
+
+        $response = $inertia->toResponse($this->makeRequest('users'), $this->makeResponse());
+        $html     = (string) $response->getBody();
+
+        $this->assertStringNotContainsString('<script>alert(1)', $html);
+
+        $page = $this->decodeDataPageAttribute($html);
+
+        $this->assertSame($hostileValue, $page['props']['note']);
+    }
+
+    /**
+     * Property: for any requested subset of prop names, the resolved prop keys equal
+     * exactly that subset and only those props' callbacks ran — proving laziness holds
+     * for every combination the data provider enumerates, not merely the cases the other
+     * tests happen to exercise.
+     *
+     * @param list<string> $allPropNames    Every prop name declared on the response.
+     * @param list<string> $requestedSubset The subset named in `X-Inertia-Partial-Data`
+     *                                      for this case.
+     */
+    #[DataProvider('providePartialReloadResolvedKeysAlwaysEqualTheRequestedSubset')]
+    public function testPartialReloadResolvedKeysAlwaysEqualTheRequestedSubset(array $allPropNames, array $requestedSubset): void
+    {
+        $invoked = [];
+        $props   = [];
+
+        foreach ($allPropNames as $propName) {
+            $props[$propName] = new LazyProp(static function () use (&$invoked, $propName) {
+                $invoked[] = $propName;
+
+                return $propName . '-value';
+            });
+        }
+
+        $inertia = new InertiaResponse('Users/Index', $props, 'v1', self::SHELL_VIEW);
+
+        $response = $inertia->toResponse(
+            $this->makeRequest('users', [
+                'X-Inertia'                   => 'true',
+                'X-Inertia-Partial-Component' => 'Users/Index',
+                'X-Inertia-Partial-Data'      => implode(',', $requestedSubset),
+            ]),
+            $this->makeResponse(),
+        );
+
+        $page = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        $expected = $requestedSubset;
+        sort($expected);
+
+        /** @var list<string> $resolvedKeys */
+        $resolvedKeys = array_keys($page['props']);
+        sort($resolvedKeys);
+
+        $invokedKeys = $invoked;
+        sort($invokedKeys);
+
+        $this->assertSame($expected, $resolvedKeys);
+        $this->assertSame($expected, $invokedKeys);
+    }
+
+    /**
+     * Enumerates every non-empty subset of three prop names as a partial-reload request,
+     * so the exhaustive-subset property test proves the resolved-keys equality holds for
+     * every possible combination of requested props, not just a hand-picked sample that
+     * could hide an off-by-one in the filter.
+     *
+     * @return iterable<string, array{0: list<string>, 1: list<string>}>
+     */
+    public static function providePartialReloadResolvedKeysAlwaysEqualTheRequestedSubset(): iterable
+    {
+        $propNames = ['users', 'settings', 'counts'];
+
+        /** @var list<list<string>> $subsets */
+        $subsets = [[]];
+
+        foreach ($propNames as $propName) {
+            foreach ($subsets as $combination) {
+                $subsets[] = [...$combination, $propName];
+            }
+        }
+
+        foreach ($subsets as $subset) {
+            if ($subset === []) {
+                continue;
+            }
+
+            yield implode('+', $subset) => [$propNames, $subset];
+        }
+    }
+}

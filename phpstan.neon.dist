@@ -1,0 +1,26 @@
+parameters:
+    level: 5
+
+    paths:
+        - src/
+        - tests/
+
+    # Boots the framework's stock app, which defines the path constants and registers the Config classes.
+    bootstrapFiles:
+        - vendor/codeigniter4/framework/system/Test/bootstrap.php
+
+    scanFiles:
+        - vendor/codeigniter4/framework/system/Common.php
+
+    codeigniter:
+        # The package registers service('inertia') and its short-name config under its own namespace.
+        additionalServices:
+            - Ejklock\Ci4Inertia\Config\Services
+        additionalConfigNamespaces:
+            - Ejklock\Ci4Inertia\Config
+
+services:
+    -
+        class: Ejklock\Ci4Inertia\Tests\Architecture\PackageDoesNotDependOnAppTest
+        tags:
+            - phpat.test

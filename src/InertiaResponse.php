@@ -1,0 +1,227 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Ejklock\Ci4Inertia;
+
+use CodeIgniter\HTTP\IncomingRequest;
+use CodeIgniter\HTTP\ResponseInterface;
+
+/**
+ * Produces the Inertia page object for one render and picks the wire
+ * representation: the JSON body an Inertia-aware request receives, or the HTML
+ * shell that embeds the same object in `data-page` for a first visit or a hard
+ * reload. An instance is immutable and single-use — build one per `render()`
+ * call.
+ */
+final readonly class InertiaResponse
+{
+    /**
+     * @param string               $component The client-side component name Inertia
+     *                                        mounts, e.g. `Users/Index`.
+     * @param array<string, mixed> $props     The declared props, keyed by name. A value
+     *                                        may be a `ResolvableProp` — a `LazyProp` to
+     *                                        defer resolution past partial-reload
+     *                                        filtering, an `OptionalProp` to also leave
+     *                                        it out of a full render, or an `AlwaysProp`
+     *                                        to bypass that filtering entirely; any other value is
+     *                                        sent as-is.
+     * @param string               $version   The asset version echoed on the page object,
+     *                                        compared by the client against the version
+     *                                        it booted with to detect stale assets.
+     * @param string               $rootView  The root view rendered for a non-Inertia
+     *                                        visit.
+     */
+    public function __construct(
+        private string $component,
+        private array $props,
+        private string $version,
+        private string $rootView,
+    ) {
+    }
+
+    /**
+     * Builds the page object and returns it as JSON or as an HTML shell, chosen solely by
+     * whether the request carries the `X-Inertia` header — the header selects a wire
+     * representation, never a permission; authorization is decided upstream by
+     * the filter chain before this method runs.
+     *
+     * @param IncomingRequest   $request  The current request; only its headers, path and
+     *                                    query string are read.
+     * @param ResponseInterface $response The response to populate and return.
+     *
+     * @return ResponseInterface The same response, carrying either the JSON page object
+     *                           with `X-Inertia: true`, or the rendered HTML shell.
+     */
+    public function toResponse(IncomingRequest $request, ResponseInterface $response): ResponseInterface
+    {
+        $page = $this->buildPageObject($request);
+
+        return $this->isInertiaRequest($request)
+            ? $this->asJson($response, $page)
+            : $this->asHtml($response, $page);
+    }
+
+    /**
+     * Assembles the page object: exactly the four keys `component`,
+     * `props`, `url` and `version` — the shape both `asJson()` and `asHtml()` serialize
+     * verbatim.
+     *
+     * @return array{component: string, props: array<string, mixed>, url: string, version: string}
+     */
+    private function buildPageObject(IncomingRequest $request): array
+    {
+        return [
+            'component' => $this->component,
+            'props'     => $this->resolveProps($request),
+            'url'       => $this->currentUrl($request),
+            'version'   => $this->version,
+        ];
+    }
+
+    /**
+     * Resolves the props to send: filters to the requested keys first, then resolves any
+     * `ResolvableProp` survivor. Reversing that order — resolving before filtering —
+     * produces byte-identical output at full cost, silently defeating the laziness callers
+     * rely on; the key-first order is a contract, not an accident.
+     *
+     * @return array<string, mixed>
+     */
+    private function resolveProps(IncomingRequest $request): array
+    {
+        $keys     = $this->requestedPropKeys($request);
+        $filtered = array_intersect_key($this->props, array_flip($keys));
+
+        return array_map($this->resolvePropValue(...), $filtered);
+    }
+
+    /**
+     * Determines which prop keys belong in this response: every declared prop but the
+     * `OptionalProp` ones on a full render, or — on a partial reload naming this component —
+     * the `X-Inertia-Partial-Data` allow-list (every prop but the optional ones when it is
+     * blank) minus `X-Inertia-Partial-Except`, unioned with every `AlwaysProp` key so it
+     * survives regardless of either header.
+     *
+     * @return list<string>
+     */
+    private function requestedPropKeys(IncomingRequest $request): array
+    {
+        $withoutOptional = array_values(array_diff(array_keys($this->props), $this->optionalPropKeys()));
+
+        if (! $this->isPartialReloadForThisComponent($request)) {
+            return $withoutOptional;
+        }
+
+        $only   = $this->splitHeaderList($request->getHeaderLine('X-Inertia-Partial-Data'));
+        $except = $this->splitHeaderList($request->getHeaderLine('X-Inertia-Partial-Except'));
+        $keys   = $only !== [] ? $only : $withoutOptional;
+        $kept   = array_diff($keys, $except);
+
+        return array_values(array_unique([...$kept, ...$this->alwaysPropKeys()]));
+    }
+
+    /**
+     * Every declared prop key whose value is an `OptionalProp` — the keys left out unless a
+     * partial reload for this component names them.
+     *
+     * @return list<string>
+     */
+    private function optionalPropKeys(): array
+    {
+        return array_keys(array_filter(
+            $this->props,
+            static fn (mixed $value): bool => $value instanceof OptionalProp,
+        ));
+    }
+
+    /**
+     * Every declared prop key whose value is an `AlwaysProp` — the keys that bypass
+     * partial-reload filtering entirely, regardless of `X-Inertia-Partial-Data` or
+     * `X-Inertia-Partial-Except`.
+     *
+     * @return list<string>
+     */
+    private function alwaysPropKeys(): array
+    {
+        return array_keys(array_filter(
+            $this->props,
+            static fn (mixed $value): bool => $value instanceof AlwaysProp,
+        ));
+    }
+
+    private function isPartialReloadForThisComponent(IncomingRequest $request): bool
+    {
+        return $request->getHeaderLine('X-Inertia-Partial-Component') === $this->component;
+    }
+
+    /**
+     * Splits a comma-separated header value into trimmed parts; an absent or blank header
+     * yields an empty list rather than a list holding one empty string.
+     *
+     * @return list<string>
+     */
+    private function splitHeaderList(string $header): array
+    {
+        if (trim($header) === '') {
+            return [];
+        }
+
+        return array_map(trim(...), explode(',', $header));
+    }
+
+    /**
+     * Returns the prop as-is, or its resolved value when it is a `ResolvableProp` — the
+     * sole point in this class where a `LazyProp`, `OptionalProp` or `AlwaysProp` callback is invoked.
+     */
+    private function resolvePropValue(mixed $value): mixed
+    {
+        return $value instanceof ResolvableProp ? $value->resolve() : $value;
+    }
+
+    private function isInertiaRequest(IncomingRequest $request): bool
+    {
+        return $request->hasHeader('X-Inertia');
+    }
+
+    /**
+     * Builds the page object's `url`: an absolute path with a guaranteed leading slash,
+     * plus the query string when present. Never includes scheme or host — the page
+     * object's `url` is relative by contract.
+     */
+    private function currentUrl(IncomingRequest $request): string
+    {
+        $path  = '/' . ltrim($request->getPath(), '/');
+        $query = $request->getUri()->getQuery();
+
+        return $query === '' ? $path : $path . '?' . $query;
+    }
+
+    /**
+     * Serializes the page object as the JSON response an Inertia-aware client expects,
+     * marking it with the `X-Inertia: true` header the protocol contract requires.
+     *
+     * @param array{component: string, props: array<string, mixed>, url: string, version: string} $page The four-key page object built by `buildPageObject()`.
+     */
+    private function asJson(ResponseInterface $response, array $page): ResponseInterface
+    {
+        return $response
+            ->setStatusCode(200)
+            ->setHeader('X-Inertia', 'true')
+            ->setJSON($page);
+    }
+
+    /**
+     * Renders the root view shell with the page object embedded, HTML-attribute-escaped,
+     * in `data-page` — the entry point for a first visit or a hard reload.
+     *
+     * @param array{component: string, props: array<string, mixed>, url: string, version: string} $page The four-key page object built by `buildPageObject()`.
+     */
+    private function asHtml(ResponseInterface $response, array $page): ResponseInterface
+    {
+        $html = view($this->rootView, [
+            'page' => json_encode($page, JSON_THROW_ON_ERROR),
+        ]);
+
+        return $response->setBody($html);
+    }
+}

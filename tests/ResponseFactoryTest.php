@@ -1,0 +1,253 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Ejklock\Ci4Inertia\Tests;
+
+use CodeIgniter\HTTP\IncomingRequest;
+use CodeIgniter\HTTP\ResponseInterface;
+use CodeIgniter\HTTP\SiteURI;
+use CodeIgniter\HTTP\UserAgent;
+use CodeIgniter\Test\CIUnitTestCase;
+use Config\App as AppConfig;
+use Ejklock\Ci4Inertia\Config\Inertia as InertiaConfig;
+use Ejklock\Ci4Inertia\LazyProp;
+use Ejklock\Ci4Inertia\ResponseFactory;
+use InvalidArgumentException;
+use PHPUnit\Framework\Attributes\DataProvider;
+use stdClass;
+
+/**
+ * Verifies `Ejklock\Ci4Inertia\ResponseFactory` against the public API in
+ * docs/architecture/inertia.md (render, share, version, location) and the egress-typing
+ * and performance-budget rules: shared/per-render prop precedence, the throw
+ * on a non scalar/array/null/ResolvableProp prop value naming its key, the version
+ * resolver invoked at most once per instance regardless of render() call or prop count,
+ * and `location()`'s 409-versus-redirect branch.
+ * Also covers the package's default config and the `inertia` service that builds the factory from it.
+ *
+ * @internal
+ */
+final class ResponseFactoryTest extends CIUnitTestCase
+{
+    /**
+     * @param array<string, string> $headers
+     */
+    private function makeRequest(string $path = '', array $headers = []): IncomingRequest
+    {
+        $config  = config(AppConfig::class);
+        $request = new IncomingRequest($config, new SiteURI($config, $path), null, new UserAgent());
+
+        foreach ($headers as $name => $value) {
+            $request->setHeader($name, $value);
+        }
+
+        return $request;
+    }
+
+    /**
+     * @psalm-suppress InvalidNullableReturnType, NullableReturnStatement the framework's service() docblock admits null
+     */
+    private function makeResponse(): ResponseInterface
+    {
+        return service('response', null, false);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function renderPageObject(ResponseFactory $factory, string $component, array $props = []): array
+    {
+        $response = $factory->render($component, $props)->toResponse(
+            $this->makeRequest('users', ['X-Inertia' => 'true']),
+            $this->makeResponse(),
+        );
+
+        return json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+    }
+
+    public function testRenderMergesSharedPropsWithPerRenderPropsAndPerRenderWinsOnCollision(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+        $factory->share(['auth' => ['name' => 'Ada'], 'flash' => 'shared-value']);
+
+        $page = $this->renderPageObject($factory, 'Users/Index', [
+            'flash' => 'per-render-value',
+            'users' => ['a'],
+        ]);
+
+        $this->assertSame([
+            'auth'  => ['name' => 'Ada'],
+            'flash' => 'per-render-value',
+            'users' => ['a'],
+        ], $page['props']);
+    }
+
+    public function testRenderAcceptsResolvablePropValuesWithoutThrowing(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+        $page = $this->renderPageObject($factory, 'Users/Index', [
+            'counts' => new LazyProp(static fn (): array => ['open' => 3]),
+        ]);
+
+        $this->assertSame(['open' => 3], $page['props']['counts']);
+    }
+
+    #[DataProvider('provideInvalidPropValues')]
+    public function testRenderThrowsForANonScalarArrayNullOrResolvablePropValueNamingTheOffendingKey(mixed $invalidValue): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('offender');
+
+        $factory->render('Users/Index', ['offender' => $invalidValue]);
+    }
+
+    #[DataProvider('provideInvalidPropValues')]
+    public function testShareThrowsForANonScalarArrayNullOrResolvablePropValueNamingTheOffendingKey(mixed $invalidValue): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('offender');
+
+        $factory->share('offender', $invalidValue);
+    }
+
+    /**
+     * @return iterable<string, array{0: mixed}>
+     */
+    public static function provideInvalidPropValues(): iterable
+    {
+        yield 'a plain object' => [new stdClass()];
+
+        yield 'a raw closure not wrapped in a ResolvableProp' => [static fn (): string => 'value'];
+    }
+
+    public function testShareBatchFormSharesEveryEntryAcrossSubsequentRenders(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+        $factory->share(['a' => 1, 'b' => 2]);
+
+        $page = $this->renderPageObject($factory, 'Users/Index');
+
+        $this->assertSame(['a' => 1, 'b' => 2], $page['props']);
+    }
+
+    public function testVersionAcceptsALiteralStringUsedVerbatimOnTheNextRender(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'initial');
+
+        $factory->version('literal-version');
+
+        $page = $this->renderPageObject($factory, 'Users/Index');
+
+        $this->assertSame('literal-version', $page['version']);
+    }
+
+    public function testVersionAcceptsACallableResolverUsedVerbatimOnTheNextRender(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'initial');
+
+        $factory->version(static fn (): string => 'resolved-by-callable');
+
+        $page = $this->renderPageObject($factory, 'Users/Index');
+
+        $this->assertSame('resolved-by-callable', $page['version']);
+    }
+
+    public function testVersionResolverIsInvokedAtMostOnceRegardlessOfRenderCallCountOrPropCount(): void
+    {
+        $invocations = 0;
+        $resolver    = static function () use (&$invocations): string {
+            $invocations++;
+
+            return 'v-' . $invocations;
+        };
+
+        $factory = new ResponseFactory($this->makeRequest(), 'app', $resolver);
+
+        $factory->render('Users/Index', ['a' => 1]);
+        $factory->render('Users/Index', ['a' => 1, 'b' => 2, 'c' => 3]);
+        $factory->render('Users/Show');
+
+        $this->assertSame(1, $invocations);
+    }
+
+    public function testLocationReturns409WithXInertiaLocationHeaderWhenRequestCarriesXInertia(): void
+    {
+        $factory = new ResponseFactory(
+            $this->makeRequest('users', ['X-Inertia' => 'true']),
+            'app',
+            static fn (): string => 'v1',
+        );
+
+        $response = $factory->location('/users');
+
+        $this->assertSame(409, $response->getStatusCode());
+        $this->assertSame('/users', $response->getHeaderLine('X-Inertia-Location'));
+        $this->assertFalse($response->hasHeader('Location'));
+    }
+
+    public function testLocationReturnsANormalRedirectWhenRequestDoesNotCarryXInertia(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest('users'), 'app', static fn (): string => 'v1');
+
+        $response = $factory->location('/users');
+
+        $this->assertNotSame(409, $response->getStatusCode());
+        $this->assertFalse($response->hasHeader('X-Inertia-Location'));
+        $this->assertSame((string) new SiteURI(config(AppConfig::class), '/users'), $response->getHeaderLine('Location'));
+    }
+
+    public function testDefaultVersionResolverReturnsAnEmptyString(): void
+    {
+        $config = new InertiaConfig();
+
+        $this->assertSame('', ($config->version)());
+    }
+
+    public function testDefaultRootViewIsNamed(): void
+    {
+        $config = new InertiaConfig();
+
+        $this->assertSame('app', $config->rootView);
+    }
+
+    public function testTheInertiaServiceBuildsTheFactoryFromTheConfiguredVersion(): void
+    {
+        $config          = config('Inertia');
+        $originalVersion = $config->version;
+        $config->version = static fn (): string => 'configured-version';
+
+        try {
+            $factory = service('inertia', false);
+
+            $this->assertSame('configured-version', $this->renderPageObject($factory, 'Users/Index')['version']);
+        } finally {
+            $config->version = $originalVersion;
+        }
+    }
+
+    public function testTheInertiaServiceRendersTheConfiguredRootView(): void
+    {
+        $config           = config('Inertia');
+        $originalRootView = $config->rootView;
+        $config->rootView = 'Ejklock\Ci4InertiaTestSupport\Views\shell';
+
+        try {
+            $html = (string) service('inertia', false)
+                ->render('Users/Index')
+                ->toResponse($this->makeRequest('users'), $this->makeResponse())
+                ->getBody();
+
+            $this->assertStringContainsString('Inertia test shell', $html);
+        } finally {
+            $config->rootView = $originalRootView;
+        }
+    }
+}

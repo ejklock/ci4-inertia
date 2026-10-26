@@ -1,0 +1,23 @@
+{
+    "$schema": "vendor/infection/infection/resources/schema.json",
+    "source": {
+        "directories": ["src"]
+    },
+    "phpUnit": {
+        "configDir": "."
+    },
+    "logs": {
+        "text": "build/infection/infection.log",
+        "summary": "build/infection/summary.log"
+    },
+    "tmpDir": "build/infection/tmp",
+    // Log and message calls are observability, not behavior; mutating them is noise.
+    "mutators": {
+        "@default": true,
+        "global-ignoreSourceCodeByRegex": [
+            ".*log_message\\(.*",
+            ".*->logger->.*",
+            ".*\\$logger->.*"
+        ]
+    }
+}
