@@ -1,0 +1,33 @@
+FROM php:8.4-fpm
+
+ARG uid=1000
+ARG user=app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpng-dev \
+    libzip-dev \
+    libicu-dev \
+    libonig-dev \
+    libxml2-dev \
+    libfreetype6-dev \
+    libjpeg62-turbo-dev \
+    libwebp-dev \
+    unzip \
+    git \
+    && docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp \
+    && docker-php-ext-install -j"$(nproc)" pdo_mysql mbstring bcmath gd zip intl exif pcntl opcache \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pecl install xdebug \
+    && docker-php-ext-enable xdebug
+
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
+
+RUN useradd -l -G www-data,root -u ${uid} -d /home/${user} ${user} \
+    && mkdir -p /home/${user}/.composer \
+    && chown -R ${user}:${user} /home/${user}
+
+WORKDIR /var/www/html
+
+USER ${user}

@@ -1,0 +1,133 @@
+#!/bin/sh
+set -eu
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+PORTS_FILE="./.dev-ports.env"
+
+resolve_project_name() {
+  if [ -n "${COMPOSE_PROJECT_NAME:-}" ]; then
+    printf '%s' "$COMPOSE_PROJECT_NAME"
+    return
+  fi
+
+  git_dir="$(git rev-parse --git-dir)"
+  common_dir="$(git rev-parse --git-common-dir)"
+
+  if [ "$git_dir" != "$common_dir" ]; then
+    printf 'codeigniter4-inertia-%s' "$(basename "$REPO_ROOT")"
+  else
+    printf 'codeigniter4-inertia'
+  fi
+}
+
+write_ports_file() {
+  printf 'COMPOSE_PROJECT_NAME=%s\n' "$COMPOSE_PROJECT_NAME" > "$PORTS_FILE"
+}
+
+load_or_resolve_config() {
+  if [ -f "$PORTS_FILE" ]; then
+    # shellcheck source=/dev/null
+    . "$PORTS_FILE"
+  else
+    COMPOSE_PROJECT_NAME="$(resolve_project_name)"
+    write_ports_file
+  fi
+
+  export COMPOSE_PROJECT_NAME
+}
+
+# Files written in the bind mount belong to the host user. UID is a read-only
+# shell variable in some shells, so it is only set in the compose environment.
+compose() {
+  env UID="$(id -u)" docker compose "$@"
+}
+
+# Runs a command in the app container; no TTY is requested when stdin is not a terminal.
+app_exec() {
+  if [ -t 0 ]; then
+    compose exec app "$@"
+  else
+    compose exec -T app "$@"
+  fi
+}
+
+cmd_up() {
+  load_or_resolve_config
+  compose up -d --build "$@"
+}
+
+cmd_down() {
+  load_or_resolve_config
+  compose down "$@"
+}
+
+cmd_sh() {
+  load_or_resolve_config
+  app_exec bash "$@"
+}
+
+cmd_test() {
+  load_or_resolve_config
+  app_exec composer test -- "$@"
+}
+
+cmd_composer() {
+  load_or_resolve_config
+  app_exec composer "$@"
+}
+
+cmd_ps() {
+  load_or_resolve_config
+  compose ps "$@"
+}
+
+cmd_exec() {
+  load_or_resolve_config
+  service="${1:-}"
+  if [ -z "$service" ]; then
+    print_usage
+    exit 1
+  fi
+  shift
+
+  if [ -t 0 ]; then
+    tty_flag=""
+  else
+    tty_flag="-T"
+  fi
+
+  if [ $# -eq 0 ]; then
+    # shellcheck disable=SC2086
+    compose exec $tty_flag "$service" bash
+  else
+    # shellcheck disable=SC2086
+    compose exec $tty_flag "$service" "$@"
+  fi
+}
+
+print_usage() {
+  echo "Usage: bin/dev <up|down|sh|test|composer|ps|exec>"
+}
+
+main() {
+  subcommand="${1:-}"
+  [ $# -gt 0 ] && shift
+
+  case "$subcommand" in
+    up) cmd_up "$@" ;;
+    down) cmd_down "$@" ;;
+    sh) cmd_sh "$@" ;;
+    test) cmd_test "$@" ;;
+    composer) cmd_composer "$@" ;;
+    ps) cmd_ps "$@" ;;
+    exec) cmd_exec "$@" ;;
+    *)
+      print_usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

@@ -1,0 +1,15 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+      args:
+        uid: "${UID:-1000}"
+        user: "${DOCKER_USER:-app}"
+    working_dir: /var/www/html
+    environment:
+      XDEBUG_MODE: "${XDEBUG_MODE:-off}"
+    volumes:
+      - .:/var/www/html
+      # zz- prefix: conf.d loads alphabetically, so this overrides earlier ini files
+      - ./docker/php/php.ini:/usr/local/etc/php/conf.d/zz-dev.ini:ro
