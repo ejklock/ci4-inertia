@@ -1,0 +1,56 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Do not report security issues here; use the private security reporting link on the issue chooser page.
+  - type: input
+    id: package-version
+    attributes:
+      label: ci4-inertia version
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: php-version
+    attributes:
+      label: PHP version
+      placeholder: "8.4"
+    validations:
+      required: true
+  - type: input
+    id: codeigniter-version
+    attributes:
+      label: CodeIgniter version
+      placeholder: 4.7.4
+    validations:
+      required: true
+  - type: input
+    id: client-adapter
+    attributes:
+      label: Inertia client adapter and version
+      description: The adapter package and its version, for example the Vue, React or Svelte adapter at 2.x.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Steps or a minimal code sample that reproduce the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include error messages, the response status and the relevant headers.
+    validations:
+      required: true

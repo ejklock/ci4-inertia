@@ -11,6 +11,9 @@ test("community files, the docs directory and the issue and pull request templat
     "SECURITY.md",
     "docs/x.md",
     ".github/ISSUE_TEMPLATE/bug.md",
+    ".github/ISSUE_TEMPLATE/bug_report.yml",
+    ".github/ISSUE_TEMPLATE/feature_request.yml",
+    ".github/ISSUE_TEMPLATE/config.yml",
     ".github/PULL_REQUEST_TEMPLATE.md",
   ]) {
     assert.equal(isDocsOnlyPath(path), true, path);
@@ -46,6 +49,15 @@ test("one code path among docs runs the code jobs", () => {
   assert.equal(touchesCode(["README.md", "CHANGELOG.md", "docs/x.md", ".github/ISSUE_TEMPLATE/bug.md", "src/InertiaResponse.php"]), true);
   assert.equal(touchesCode([".github/workflows/ci.yml"]), true);
   assert.equal(touchesCode(["composer.json"]), true);
+});
+
+test("a change mixing a README edit with source counts as code", () => {
+  assert.equal(touchesCode(["README.md", "src/InertiaResponse.php"]), true);
+});
+
+test("a change of only .gitattributes counts as code", () => {
+  assert.equal(isDocsOnlyPath(".gitattributes"), false);
+  assert.equal(touchesCode([".gitattributes"]), true);
 });
 
 test("an empty change set runs the code jobs", () => {
