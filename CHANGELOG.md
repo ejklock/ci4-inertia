@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `InertiaFilter` shares the validation errors that `redirect()->withInput()` flashes as the `errors` prop, so a controller no longer needs `->with('errors', ...)`; an `errors` session array still wins whole.
+
 ## [0.1.0] - 2026-10-26
 
 ### Added

@@ -298,4 +298,96 @@ final class InertiaFilterTest extends CIUnitTestCase
         $this->assertArrayHasKey('items', $page['props']);
         $this->assertSame(['subject' => 'Subject is required.'], $page['props']['errors']);
     }
+
+    /**
+     * @param array<string, mixed> $session
+     * @param array<string, mixed> $expectedErrors
+     */
+    #[DataProvider('provideErrorsPropFollowsTheSessionErrorSourcePrecedence')]
+    public function testErrorsPropFollowsTheSessionErrorSourcePrecedence(array $session, array $expectedErrors): void
+    {
+        $this->withRoutes([$this->renderingRoute()]);
+
+        $result = $this->withSession($session)
+            ->withHeaders(['X-Inertia' => 'true', 'X-Inertia-Version' => self::CURRENT_VERSION])
+            ->get('/page');
+
+        $result->assertStatus(200);
+
+        $page = json_decode((string) $result->response()->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame($expectedErrors, $page['props']['errors']);
+    }
+
+    /**
+     * @return iterable<string, array{0: array<string, mixed>, 1: array<string, mixed>}>
+     */
+    public static function provideErrorsPropFollowsTheSessionErrorSourcePrecedence(): iterable
+    {
+        yield 'only the errors flash' => [
+            ['errors' => ['subject' => 'Subject is required.']],
+            ['subject' => 'Subject is required.'],
+        ];
+
+        yield 'only the withInput validation errors' => [
+            ['_ci_validation_errors' => ['email' => 'Email is invalid.']],
+            ['email' => 'Email is invalid.'],
+        ];
+
+        yield 'both sources: the errors flash wins whole' => [
+            [
+                'errors'                => ['subject' => 'Subject is required.'],
+                '_ci_validation_errors' => ['email' => 'Email is invalid.'],
+            ],
+            ['subject' => 'Subject is required.'],
+        ];
+
+        yield 'a non-array errors flash falls through to the validation errors' => [
+            [
+                'errors'                => 'something went wrong',
+                '_ci_validation_errors' => ['email' => 'Email is invalid.'],
+            ],
+            ['email' => 'Email is invalid.'],
+        ];
+
+        yield 'a non-array validation errors value alone is no errors' => [
+            ['_ci_validation_errors' => 'not an array'],
+            [],
+        ];
+
+        yield 'neither source' => [[], []];
+    }
+
+    public function testValidationErrorsFromWithInputReachTheNextInertiaPage(): void
+    {
+        $this->withRoutes([
+            ['POST', 'form', static function () {
+                $validation = service('validation');
+                $validation->setRules(['email' => 'required|valid_email']);
+
+                if ($validation->run(['email' => 'nope'])) {
+                    return service('response')->setBody('saved');
+                }
+
+                return redirect()->to('/page')->withInput();
+            }, ['filter' => 'inertia']],
+            $this->renderingRoute(),
+        ]);
+
+        $this->post('/form', ['email' => 'nope'])->assertRedirectTo('/page');
+
+        $this->resetPerRequestServices();
+        $this->withRoutes([$this->renderingRoute()]);
+
+        $result = $this->withSession($_SESSION)
+            ->withHeaders(['X-Inertia' => 'true', 'X-Inertia-Version' => self::CURRENT_VERSION])
+            ->get('/page');
+
+        $result->assertStatus(200);
+
+        $page = json_decode((string) $result->response()->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame(['email'], array_keys($page['props']['errors']));
+        $this->assertNotSame('', $page['props']['errors']['email']);
+    }
 }

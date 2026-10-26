@@ -18,9 +18,11 @@ use Ejklock\Ci4Inertia\ResponseFactory;
  * asset version with a `409` reload ahead of the controller, marks every response
  * `Vary: X-Inertia`, and converts a `302` to `303` after a `PUT`/`PATCH`/`DELETE`
  * redirect. An application extends this class and overrides `share()` to add its own
- * shared props; it registers the filter after any authentication or authorization
- * filter, so a denial from either short-circuits the filter chain before this filter's
- * `before()` or `after()` runs and no branch here re-checks authorization.
+ * shared props. In CodeIgniter 4.7's default filter order the `before` filters in
+ * `$globals` run ahead of `$methods`, `$filters` and route filters, so an authentication
+ * or authorization filter that must run first belongs in `$globals['before']` ahead of
+ * this filter; a denial from it short-circuits the chain before this filter's `before()`
+ * runs, and no branch here re-checks authorization.
  */
 class InertiaFilter implements FilterInterface
 {
@@ -55,7 +57,8 @@ class InertiaFilter implements FilterInterface
 
     /**
      * The props shared on every Inertia render, keyed by prop name: the current session
-     * validation errors as `errors`, an empty object when there are none. An extending
+     * validation errors as `errors` (the `errors` session array, else the errors
+     * `redirect()->withInput()` flashed), an empty object when there are none. An extending
      * class merges its own entries into the parent's result.
      *
      * @return array<string, mixed>
@@ -86,16 +89,23 @@ class InertiaFilter implements FilterInterface
     }
 
     /**
-     * Reads the CI4 session validation errors, keyed by field name, or an empty array
-     * when the session carries none.
+     * Reads the session validation errors, keyed by field name: the `errors` session array
+     * when present, whole and never merged; otherwise the errors `withInput()` flashed under
+     * `_ci_validation_errors`; otherwise an empty array.
      *
      * @return array<string, mixed>
      */
     private function sessionValidationErrors(): array
     {
-        $errors = session('errors');
+        foreach (['errors', '_ci_validation_errors'] as $key) {
+            $errors = session($key);
 
-        return is_array($errors) ? $errors : [];
+            if (is_array($errors)) {
+                return $errors;
+            }
+        }
+
+        return [];
     }
 
     /**

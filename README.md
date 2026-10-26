@@ -69,7 +69,7 @@ public array $globals = [
 - adds `Vary: X-Inertia` to every response;
 - turns a `302` into a `303` after a `PUT`, `PATCH` or `DELETE`, so the browser follows the redirect with a `GET`.
 
-In CodeIgniter 4.7 with the default filter order (`Feature::$oldFilterOrder = false`), the `before` filters in `$globals` run ahead of route and `$filters` filters. An authentication or authorization filter that must run first therefore goes before `'inertia'` in `$globals['before']`; a denial from a filter listed earlier ends the chain before `InertiaFilter` runs. A route or `$filters` auth filter runs after `InertiaFilter`'s `before()`.
+In CodeIgniter 4.7 with the default filter order (`Feature::$oldFilterOrder = false`), the `before` filters in `$globals` run ahead of `$methods`, `$filters` and route filters. An authentication or authorization filter that must run first therefore goes before `'inertia'` in `$globals['before']`; a denial from a filter listed earlier ends the chain before `InertiaFilter` runs. A `$methods`, `$filters` or route auth filter runs after `InertiaFilter`'s `before()`.
 
 ### CSRF
 
@@ -173,21 +173,29 @@ Props passed to `render()` win over shared props with the same key.
 
 ## Validation errors and redirects
 
-`InertiaFilter` shares an `errors` prop built from the session value `errors`: an object of field name to message, empty when there are none. The prop is always sent, even on a partial reload that does not name it.
+`InertiaFilter` shares an `errors` prop: an object of field name to message, empty when there are none. The prop is always sent, even on a partial reload that does not name it.
 
-Flash the errors under the `errors` key when validation fails:
+Redirect with `withInput()` when validation fails. CodeIgniter flashes the validation errors with it, and the next Inertia page receives them as `errors`:
 
 ```php
 public function store()
 {
     if (! $this->validate(['email' => 'required|valid_email'])) {
-        return redirect()->to('/users/create')->with('errors', $this->validator->getErrors());
+        return redirect()->to('/users/create')->withInput();
     }
 
     // save, then:
     return redirect()->to('/users');
 }
 ```
+
+To control the errors yourself, flash an array under the `errors` key instead:
+
+```php
+return redirect()->to('/users/create')->with('errors', $this->validator->getErrors());
+```
+
+When the session holds an `errors` array, it is the `errors` prop as it is; the errors `withInput()` flashed are ignored, never merged with it.
 
 Redirect to an explicit form URL rather than `redirect()->back()`: Inertia visits do not record CodeIgniter's previous URL, so `back()` can return to the last full page load instead of the form.
 
