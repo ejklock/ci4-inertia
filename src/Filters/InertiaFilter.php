@@ -19,8 +19,9 @@ use Ejklock\Ci4Inertia\ResponseFactory;
  * `Vary: X-Inertia`, and converts a `302` to `303` after a `PUT`/`PATCH`/`DELETE`
  * redirect. An application extends this class and overrides `share()` to add its own
  * shared props, and `version()` to compute the asset version at runtime; the stale-version
- * check and every page object use that one value, resolved once per request before the
- * controller runs, so a later `service('inertia')->version()` call is not compared. In CodeIgniter 4.7's default filter order the `before` filters in
+ * check and every page object use that one value, resolved at most once per request and
+ * only when the check or a render needs it, so a later `service('inertia')->version()`
+ * call is not compared. In CodeIgniter 4.7's default filter order the `before` filters in
  * `$globals` run ahead of `$methods`, `$filters` and route filters, so an authentication
  * or authorization filter that must run first belongs in `$globals['before']` ahead of
  * this filter; a denial from it short-circuits the chain before this filter's `before()`
@@ -29,9 +30,9 @@ use Ejklock\Ci4Inertia\ResponseFactory;
 class InertiaFilter implements FilterInterface
 {
     /**
-     * Sets the asset version from `version()`, shares every entry of `share()` as a prop,
-     * then answers a stale-version `GET` with the `409` reload response before the
-     * controller runs.
+     * Installs `version()` as the lazy asset version resolver, shares every entry of
+     * `share()` as a prop, then answers a stale-version `GET` with the `409` reload
+     * response before the controller runs.
      *
      * @param list<string>|null $arguments Unused; this filter takes no route arguments.
      */
@@ -41,8 +42,11 @@ class InertiaFilter implements FilterInterface
 
         $inertia = service('inertia');
 
-        $currentVersion = $this->version($request);
-        $inertia->version($currentVersion);
+        $memo           = null;
+        $resolveVersion = function () use ($request, &$memo): string {
+            return $memo ??= $this->version($request);
+        };
+        $inertia->version($resolveVersion);
 
         foreach ($this->share($request) as $key => $prop) {
             $inertia->share($key, $prop);
@@ -51,6 +55,8 @@ class InertiaFilter implements FilterInterface
         if (! $this->isVersionCheckEligible($request)) {
             return null;
         }
+
+        $currentVersion = $resolveVersion();
 
         if ($request->getHeaderLine('X-Inertia-Version') === $currentVersion) {
             return null;
@@ -62,9 +68,10 @@ class InertiaFilter implements FilterInterface
     /**
      * The asset version of this request, used for the stale-version check and carried by
      * every page object. Defaults to the `Inertia` config's `version`; an extending class
-     * overrides it to compute the version from the request. It runs once per request,
-     * before the controller, so a `version()` call made later in a controller is not seen
-     * by the check.
+     * overrides it to compute the version from the request. It runs at most once per
+     * request, and only when the stale check of an Inertia `GET` or a render needs the
+     * version; the check runs before the controller, so a `version()` call made later in a
+     * controller is not seen by it.
      */
     protected function version(IncomingRequest $request): string
     {

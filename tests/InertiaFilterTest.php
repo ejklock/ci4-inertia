@@ -362,6 +362,40 @@ final class InertiaFilterTest extends CIUnitTestCase
         $this->assertSame(1, self::$hookCalls);
     }
 
+    public function testTheHookDoesNotRunOnAnInertiaPostThatRedirectsWithoutRendering(): void
+    {
+        $this->useVersionHookFilter();
+        $this->withRoutes([
+            ['POST', 'page', static fn () => redirect()->to('/'), ['filter' => 'inertia']],
+        ]);
+
+        $this->withHeaders(['X-Inertia' => 'true'])->post('/page');
+
+        $this->assertSame(0, self::$hookCalls);
+    }
+
+    public function testTheHookDoesNotRunOnANonInertiaGetThatReturnsAPlainString(): void
+    {
+        $this->useVersionHookFilter();
+        $this->withRoutes([
+            ['GET', 'page', static fn () => 'plain', ['filter' => 'inertia']],
+        ]);
+
+        $this->get('/page')->assertStatus(200);
+
+        $this->assertSame(0, self::$hookCalls);
+    }
+
+    public function testTheHookRunsOnceOnAFullPageLoadThatRenders(): void
+    {
+        $this->useVersionHookFilter();
+        $this->withRoutes([$this->renderingRoute()]);
+
+        $this->get('/page')->assertStatus(200);
+
+        $this->assertSame(1, self::$hookCalls);
+    }
+
     public function testErrorsPropIsAnEmptyObjectWhenSessionHasNoValidationErrors(): void
     {
         $this->withRoutes([$this->renderingRoute()]);

@@ -13,7 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
-- The stale-version check and the page object now share the version the filter's `version()` returns, resolved once per request before the controller runs; a `service('inertia')->version()` call in a controller is not seen by the check.
+- The stale-version check and the page object now share the version the filter's `version()` returns, resolved at most once per request, only when the stale check of an Inertia `GET` or a render needs it; a `service('inertia')->version()` call in a controller is not seen by the check.
 
 ## [0.1.0] - 2026-10-26
 

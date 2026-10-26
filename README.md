@@ -240,7 +240,7 @@ class InertiaFilter extends BaseInertiaFilter
 }
 ```
 
-The filter calls the hook once per request, before the controller, and uses its result both for the stale-version check and for the page object. A `service('inertia')->version(...)` call inside a controller runs after the check, so the check never compares it: the page object then carries a version that differs from the one the client is compared against, and every Inertia `GET` visit answers `409`, turning each navigation into a full page reload. Set the version in the config or in the filter hook, not in a controller.
+The filter calls the hook at most once per request, and only when the stale-version check of an Inertia `GET` or a render needs the version (a redirect or a non-Inertia response never runs it); its result serves both the check and the page object. A `service('inertia')->version(...)` call inside a controller runs after the check, so the check never compares it: the page object then carries a version that differs from the one the client is compared against, and every Inertia `GET` visit answers `409`, turning each navigation into a full page reload. Set the version in the config or in the filter hook, not in a controller.
 
 ## External redirects
 
