@@ -11,7 +11,8 @@ use InvalidArgumentException;
 
 /**
  * The public entry point a controller invokes to build an Inertia response: `render()`
- * for a page, `defer()` for a prop the client loads afterwards, `share()` for props carried across every render on this instance, `version()`
+ * for a page, `defer()` for a prop the client loads afterwards, `merge()` and `deepMerge()` for a
+ * prop the client combines with its current value, `share()` for props carried across every render on this instance, `version()`
  * to override how the asset version is resolved, and `location()` to answer a stale-asset
  * reload. The props array is treated as an egress channel — only a scalar,
  * array, `null`, or `ResolvableProp` value may cross it, so a controller must state what
@@ -81,6 +82,31 @@ final class ResponseFactory
     public function defer(callable $callback, string $group = 'default'): DeferProp
     {
         return new DeferProp($callback, $group);
+    }
+
+    /**
+     * Marks a prop the client appends to the value it already holds instead of replacing it:
+     * pass the result as a prop value to `render()` or `share()`. Chain `prepend()`,
+     * `deepMerge()` or `matchOn()` on it to change how the client combines the value.
+     *
+     * @param array<array-key, mixed>|Closure $value An array sent as-is, or a closure invoked
+     *                                               only when the prop is resolved.
+     */
+    public function merge(array|Closure $value): MergeProp
+    {
+        return new MergeProp($value);
+    }
+
+    /**
+     * Marks a prop the client deep-merges into the value it already holds instead of
+     * replacing it: pass the result as a prop value to `render()` or `share()`.
+     *
+     * @param array<array-key, mixed>|Closure $value An array sent as-is, or a closure invoked
+     *                                               only when the prop is resolved.
+     */
+    public function deepMerge(array|Closure $value): MergeProp
+    {
+        return (new MergeProp($value))->deepMerge();
     }
 
     /**

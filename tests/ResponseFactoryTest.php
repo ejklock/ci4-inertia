@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Ejklock\Ci4Inertia\Tests;
 
+use ArrayObject;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\ResponseInterface;
 use CodeIgniter\HTTP\SiteURI;
@@ -270,6 +271,52 @@ final class ResponseFactoryTest extends CIUnitTestCase
         } finally {
             $config->version = $originalVersion;
         }
+    }
+
+    public function testMergeBuildsAnAppendPropResolvingToTheGivenArray(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+        $page = $this->renderPageObject($factory, 'Users/Index', ['users' => $factory->merge([1])]);
+
+        $this->assertSame([1], $page['props']['users']);
+        $this->assertSame(['users'], $page['mergeProps']);
+        $this->assertArrayNotHasKey('deepMergeProps', $page);
+    }
+
+    public function testMergeInvokesAClosureOnlyWhenTheValueIsResolved(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+        $calls   = new ArrayObject();
+        $prop    = $factory->merge(static function () use ($calls): array {
+            $calls->append('resolved');
+
+            return [2];
+        });
+
+        $this->assertCount(0, $calls);
+        $this->assertSame([2], $prop->resolve());
+        $this->assertCount(1, $calls);
+    }
+
+    public function testDeepMergeBuildsAPropListedAsDeepMerged(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+        $page = $this->renderPageObject($factory, 'Users/Index', ['conf' => $factory->deepMerge(['a' => 1])]);
+
+        $this->assertSame(['conf'], $page['deepMergeProps']);
+        $this->assertArrayNotHasKey('mergeProps', $page);
+    }
+
+    public function testSharedMergePropIsListedOnTheNextRender(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+        $factory->share('notices', $factory->merge([1]));
+
+        $page = $this->renderPageObject($factory, 'Users/Index');
+
+        $this->assertSame(['notices'], $page['mergeProps']);
     }
 
     public function testTheInertiaServiceRendersTheConfiguredRootView(): void

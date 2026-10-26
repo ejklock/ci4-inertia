@@ -14,6 +14,7 @@ use Ejklock\Ci4Inertia\AlwaysProp;
 use Ejklock\Ci4Inertia\DeferProp;
 use Ejklock\Ci4Inertia\InertiaResponse;
 use Ejklock\Ci4Inertia\LazyProp;
+use Ejklock\Ci4Inertia\MergeProp;
 use Ejklock\Ci4Inertia\OptionalProp;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -538,6 +539,111 @@ final class InertiaResponseTest extends CIUnitTestCase
     public function testDeferPropResolveReturnsTheCallbackResult(): void
     {
         $this->assertSame(['x' => 1], (new DeferProp(static fn (): array => ['x' => 1]))->resolve());
+    }
+
+    public function testFirstVisitEmbedsTheMergeListsInTheHtmlShell(): void
+    {
+        $props = [
+            'a'        => 1,
+            'users'    => new MergeProp([1, 2]),
+            'feed'     => (new MergeProp(static fn (): array => [9]))->prepend(),
+            'settings' => (new MergeProp(['k' => 1]))->deepMerge(),
+            'posts'    => (new MergeProp([4]))->matchOn('id'),
+            'tags'     => (new MergeProp([5]))->prepend()->matchOn('id', 'slug'),
+        ];
+
+        $response = (new InertiaResponse('Users/Index', $props, 'v1', self::SHELL_VIEW))
+            ->toResponse($this->makeRequest('users'), $this->makeResponse());
+        $page = $this->decodeDataPageAttribute((string) $response->getBody());
+
+        $this->assertSame([1, 2], $page['props']['users']);
+        $this->assertSame([9], $page['props']['feed']);
+        $this->assertSame(['users', 'posts'], $page['mergeProps']);
+        $this->assertSame(['feed', 'tags'], $page['prependProps']);
+        $this->assertSame(['settings'], $page['deepMergeProps']);
+        $this->assertSame(['posts.id', 'tags.id', 'tags.slug'], $page['matchPropsOn']);
+    }
+
+    /**
+     * @param array<string, string> $headers
+     *
+     * @return array{page: array<string, mixed>, invoked: int}
+     */
+    private function renderWithMergeableDeferProp(DeferProp $stats, array $headers): array
+    {
+        $invoked = 0;
+        $props   = ['a' => 1, 'stats' => $stats, 'plain' => new DeferProp(static function () use (&$invoked): int {
+            $invoked++;
+
+            return 1;
+        })];
+
+        $response = (new InertiaResponse('Settings/Index', $props, 'v1', self::SHELL_VIEW))
+            ->toResponse($this->makeRequest('settings', ['X-Inertia' => 'true', ...$headers]), $this->makeResponse());
+
+        return [
+            'page'    => json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR),
+            'invoked' => $invoked,
+        ];
+    }
+
+    public function testMergeableDeferPropIsListedForMergeWithoutBeingResolved(): void
+    {
+        $calls = 0;
+        $stats = (new DeferProp(static function () use (&$calls): int {
+            $calls++;
+
+            return 5;
+        }, 'g'))->merge();
+
+        $result = $this->renderWithMergeableDeferProp($stats, []);
+
+        $this->assertSame(['a'], array_keys($result['page']['props']));
+        $this->assertSame(0, $calls);
+        $this->assertSame(['g' => ['stats'], 'default' => ['plain']], $result['page']['deferredProps']);
+        $this->assertSame(['stats'], $result['page']['mergeProps']);
+    }
+
+    public function testMergeableDeferPropFollowUpResolvesAndKeepsItsMergeList(): void
+    {
+        $stats  = (new DeferProp(static fn (): array => [5], 'g'))->merge();
+        $result = $this->renderWithMergeableDeferProp($stats, [
+            'X-Inertia-Partial-Component' => 'Settings/Index',
+            'X-Inertia-Partial-Data'      => 'stats',
+        ]);
+
+        $this->assertSame(['stats' => [5]], $result['page']['props']);
+        $this->assertSame(['stats'], $result['page']['mergeProps']);
+        $this->assertArrayNotHasKey('deferredProps', $result['page']);
+        $this->assertSame(0, $result['invoked']);
+    }
+
+    public function testDeferPropModesListUnderTheirOwnMergeKeys(): void
+    {
+        $deep    = $this->renderWithMergeableDeferProp((new DeferProp(static fn (): int => 1))->deepMerge(), []);
+        $prepend = $this->renderWithMergeableDeferProp((new DeferProp(static fn (): int => 1))->prepend()->matchOn('id'), []);
+
+        $this->assertSame(['stats'], $deep['page']['deepMergeProps']);
+        $this->assertArrayNotHasKey('mergeProps', $deep['page']);
+        $this->assertSame(['stats'], $prepend['page']['prependProps']);
+        $this->assertSame(['stats.id'], $prepend['page']['matchPropsOn']);
+    }
+
+    public function testDeferPropWithoutAMergeCallIsInNoMergeList(): void
+    {
+        $result = $this->renderWithMergeableDeferProp(new DeferProp(static fn (): int => 1), []);
+
+        $this->assertSame(['component', 'props', 'url', 'version', 'deferredProps'], array_keys($result['page']));
+    }
+
+    public function testMergeCallOnADeferPropKeepsItsGroupAndLeavesTheOriginalUnmergeable(): void
+    {
+        $original = new DeferProp(static fn (): int => 1, 'sidebar');
+        $merged   = $original->merge();
+
+        $this->assertSame('sidebar', $merged->group());
+        $this->assertSame('sidebar', $original->prepend()->deepMerge()->matchOn('id')->group());
+        $this->assertArrayNotHasKey('mergeProps', $this->renderWithMergeableDeferProp($original, [])['page']);
     }
 
     public function testAttributeEscapingPreventsBreakingOutOfDataPageAttribute(): void

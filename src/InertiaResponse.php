@@ -25,7 +25,8 @@ final readonly class InertiaResponse
      *                                        filtering, an `OptionalProp` to also leave
      *                                        it out of a full render, a `DeferProp` to
      *                                        leave it out of a full render and have the
-     *                                        client fetch it afterwards, or an `AlwaysProp`
+     *                                        client fetch it afterwards, a `MergeProp` to have
+     *                                        the client combine it with its current value, or an `AlwaysProp`
      *                                        to bypass that filtering entirely; any other value is
      *                                        sent as-is.
      * @param string               $version   The asset version echoed on the page object,
@@ -67,9 +68,10 @@ final readonly class InertiaResponse
     /**
      * Assembles the page object: the keys `component`, `props`, `url` and `version`, plus
      * `deferredProps` when this is not a partial reload and at least one `DeferProp` is
-     * declared — the shape both `asJson()` and `asHtml()` serialize verbatim.
+     * declared, plus the merge lists (`mergeProps`, `prependProps`, `deepMergeProps`,
+     * `matchPropsOn`) that apply — the shape both `asJson()` and `asHtml()` serialize verbatim.
      *
-     * @return array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: array<string, list<string>>}
+     * @return array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: array<string, list<string>>, mergeProps?: list<string>, prependProps?: list<string>, deepMergeProps?: list<string>, matchPropsOn?: list<string>}
      */
     private function buildPageObject(IncomingRequest $request): array
     {
@@ -81,8 +83,74 @@ final readonly class InertiaResponse
         ];
 
         $deferred = $this->isPartialReloadForThisComponent($request) ? [] : $this->deferredPropKeysByGroup();
+        $page     = $deferred === [] ? $page : [...$page, 'deferredProps' => $deferred];
 
-        return $deferred === [] ? $page : [...$page, 'deferredProps' => $deferred];
+        return array_merge($page, $this->mergeMetadata($request));
+    }
+
+    /**
+     * Lists the mergeable prop keys by how the client combines them: `mergeProps` (appended),
+     * `prependProps`, `deepMergeProps`, and `matchPropsOn` (`"<key>.<field>"`). A list with no
+     * entry is left out. A key named in `X-Inertia-Reset` is dropped from every list while its
+     * value is still sent, so the client replaces instead of merging; on a partial reload for
+     * this component a key is kept only when `X-Inertia-Partial-Data` names it (when not blank)
+     * and `X-Inertia-Partial-Except` does not. Only keys are read, so no callback is invoked.
+     *
+     * @return array{mergeProps?: list<string>, prependProps?: list<string>, deepMergeProps?: list<string>, matchPropsOn?: list<string>}
+     */
+    private function mergeMetadata(IncomingRequest $request): array
+    {
+        $append  = [];
+        $prepend = [];
+        $deep    = [];
+        $matches = [];
+
+        foreach ($this->listedMergeStates($request) as $key => $state) {
+            $name = (string) $key;
+
+            match ($state->mode) {
+                MergeMode::Append  => $append[]  = $name,
+                MergeMode::Prepend => $prepend[] = $name,
+                MergeMode::Deep    => $deep[]    = $name,
+            };
+
+            foreach ($state->matchFields as $field) {
+                $matches[] = $name . '.' . $field;
+            }
+        }
+
+        return array_filter([
+            'mergeProps'     => $append,
+            'prependProps'   => $prepend,
+            'deepMergeProps' => $deep,
+            'matchPropsOn'   => $matches,
+        ], static fn (array $list): bool => $list !== []);
+    }
+
+    /**
+     * The merge state of every mergeable prop this response lists, keyed by prop name.
+     *
+     * @return array<string, MergeState>
+     */
+    private function listedMergeStates(IncomingRequest $request): array
+    {
+        $partial = $this->isPartialReloadForThisComponent($request);
+        $reset   = $this->splitHeaderList($request->getHeaderLine('X-Inertia-Reset'));
+        $only    = $partial ? $this->splitHeaderList($request->getHeaderLine('X-Inertia-Partial-Data')) : [];
+        $except  = $partial ? $this->splitHeaderList($request->getHeaderLine('X-Inertia-Partial-Except')) : [];
+        $states  = [];
+
+        foreach ($this->props as $key => $value) {
+            $name  = (string) $key;
+            $state = $value instanceof MergeProp || $value instanceof DeferProp ? $value->mergeState() : null;
+            $named = $only === []                || in_array($name, $only, true);
+
+            if ($state instanceof MergeState && $named && ! in_array($name, [...$reset, ...$except], true)) {
+                $states[$name] = $state;
+            }
+        }
+
+        return $states;
     }
 
     /**
@@ -225,7 +293,7 @@ final readonly class InertiaResponse
      * Serializes the page object as the JSON response an Inertia-aware client expects,
      * marking it with the `X-Inertia: true` header the protocol contract requires.
      *
-     * @param array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: array<string, list<string>>} $page The page object built by `buildPageObject()`.
+     * @param array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: array<string, list<string>>, mergeProps?: list<string>, prependProps?: list<string>, deepMergeProps?: list<string>, matchPropsOn?: list<string>} $page The page object built by `buildPageObject()`.
      */
     private function asJson(ResponseInterface $response, array $page): ResponseInterface
     {
@@ -239,7 +307,7 @@ final readonly class InertiaResponse
      * Renders the root view shell with the page object embedded, HTML-attribute-escaped,
      * in `data-page` — the entry point for a first visit or a hard reload.
      *
-     * @param array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: array<string, list<string>>} $page The page object built by `buildPageObject()`.
+     * @param array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: array<string, list<string>>, mergeProps?: list<string>, prependProps?: list<string>, deepMergeProps?: list<string>, matchPropsOn?: list<string>} $page The page object built by `buildPageObject()`.
      */
     private function asHtml(ResponseInterface $response, array $page): ResponseInterface
     {
