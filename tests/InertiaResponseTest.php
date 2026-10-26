@@ -11,9 +11,11 @@ use CodeIgniter\HTTP\UserAgent;
 use CodeIgniter\Test\CIUnitTestCase;
 use Config\App as AppConfig;
 use Ejklock\Ci4Inertia\AlwaysProp;
+use Ejklock\Ci4Inertia\DeferProp;
 use Ejklock\Ci4Inertia\InertiaResponse;
 use Ejklock\Ci4Inertia\LazyProp;
 use Ejklock\Ci4Inertia\OptionalProp;
+use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
 
 /**
@@ -374,6 +376,168 @@ final class InertiaResponseTest extends CIUnitTestCase
 
         $this->assertSame(['users'], array_keys($result['props']));
         $this->assertSame(0, $result['invocations']);
+    }
+
+    /**
+     * Renders a page of one plain prop, an always-sent prop and deferred props across two groups
+     * for the request headers, and reports the page object plus which deferred callbacks ran.
+     *
+     * @param array<string, string> $headers
+     *
+     * @return array{page: array<string, mixed>, invoked: list<string>}
+     */
+    private function renderWithDeferredProps(array $headers, bool $inertia = true): array
+    {
+        $invoked = [];
+        $defer   = static function (string $key, string $group = 'default') use (&$invoked): DeferProp {
+            return new DeferProp(static function () use (&$invoked, $key): string {
+                $invoked[] = $key;
+
+                return 'value-' . $key;
+            }, $group);
+        };
+        $props = [
+            'a'      => 1,
+            'b'      => $defer('b'),
+            'c'      => $defer('c', 'sidebar'),
+            'd'      => $defer('d', 'sidebar'),
+            'errors' => new AlwaysProp(static fn (): array => []),
+        ];
+
+        $request  = $this->makeRequest('settings', $inertia ? ['X-Inertia' => 'true', ...$headers] : $headers);
+        $response = (new InertiaResponse('Settings/Index', $props, 'v1', self::SHELL_VIEW))
+            ->toResponse($request, $this->makeResponse());
+        $page = $inertia
+            ? json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR)
+            : $this->decodeDataPageAttribute((string) $response->getBody());
+
+        return ['page' => $page, 'invoked' => $invoked];
+    }
+
+    public function testDeferredPropsAreLeftOutOfAFirstVisitAndListedByGroup(): void
+    {
+        $result = $this->renderWithDeferredProps([], false);
+
+        $this->assertSame(['a', 'errors'], array_keys($result['page']['props']));
+        $this->assertSame(['default' => ['b'], 'sidebar' => ['c', 'd']], $result['page']['deferredProps']);
+        $this->assertSame([], $result['invoked']);
+    }
+
+    public function testDeferredPropsAreLeftOutOfAnInertiaRequestWithoutPartialHeaders(): void
+    {
+        $result = $this->renderWithDeferredProps([]);
+
+        $this->assertSame(['a', 'errors'], array_keys($result['page']['props']));
+        $this->assertSame(['default' => ['b'], 'sidebar' => ['c', 'd']], $result['page']['deferredProps']);
+        $this->assertSame([], $result['invoked']);
+    }
+
+    public function testDeferredPropsAreListedWhenThePartialReloadIsForAnotherComponent(): void
+    {
+        $result = $this->renderWithDeferredProps([
+            'X-Inertia-Partial-Component' => 'Users/Index',
+            'X-Inertia-Partial-Data'      => 'b',
+        ]);
+
+        $this->assertSame(['a', 'errors'], array_keys($result['page']['props']));
+        $this->assertSame(['default' => ['b'], 'sidebar' => ['c', 'd']], $result['page']['deferredProps']);
+        $this->assertSame([], $result['invoked']);
+    }
+
+    public function testPageWithoutDeferredPropsKeepsExactlyTheFourPageKeys(): void
+    {
+        $inertia = new InertiaResponse('Users/Index', ['a' => 1], 'v1', self::SHELL_VIEW);
+
+        $response = $inertia->toResponse($this->makeRequest('users', ['X-Inertia' => 'true']), $this->makeResponse());
+        $page     = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame(['component', 'props', 'url', 'version'], array_keys($page));
+    }
+
+    public function testPartialReloadNamingDeferredPropsResolvesOnlyThoseAndOmitsTheDeferredList(): void
+    {
+        $result = $this->renderWithDeferredProps([
+            'X-Inertia-Partial-Component' => 'Settings/Index',
+            'X-Inertia-Partial-Data'      => 'c,d',
+        ]);
+
+        $this->assertSame(['c' => 'value-c', 'd' => 'value-d', 'errors' => []], $result['page']['props']);
+        $this->assertSame(['c', 'd'], $result['invoked']);
+        $this->assertArrayNotHasKey('deferredProps', $result['page']);
+    }
+
+    public function testPartialReloadNamingOneDeferredPropResolvesOnlyThatOne(): void
+    {
+        $result = $this->renderWithDeferredProps([
+            'X-Inertia-Partial-Component' => 'Settings/Index',
+            'X-Inertia-Partial-Data'      => 'b',
+        ]);
+
+        $this->assertSame(['b' => 'value-b', 'errors' => []], $result['page']['props']);
+        $this->assertSame(['b'], $result['invoked']);
+    }
+
+    public function testPartialReloadWithBlankDataSendsNoDeferredPropAndInvokesNone(): void
+    {
+        $result = $this->renderWithDeferredProps([
+            'X-Inertia-Partial-Component' => 'Settings/Index',
+            'X-Inertia-Partial-Except'    => 'a',
+        ]);
+
+        $this->assertSame(['errors' => []], $result['page']['props']);
+        $this->assertSame([], $result['invoked']);
+        $this->assertArrayNotHasKey('deferredProps', $result['page']);
+    }
+
+    public function testPartialReloadThatNamesAndExceptsADeferredPropDoesNotSendIt(): void
+    {
+        $result = $this->renderWithDeferredProps([
+            'X-Inertia-Partial-Component' => 'Settings/Index',
+            'X-Inertia-Partial-Data'      => 'b',
+            'X-Inertia-Partial-Except'    => 'b',
+        ]);
+
+        $this->assertSame(['errors' => []], $result['page']['props']);
+        $this->assertSame([], $result['invoked']);
+    }
+
+    public function testDeferPropGroupDefaultsToDefault(): void
+    {
+        $this->assertSame('default', (new DeferProp(static fn (): int => 1))->group());
+    }
+
+    public function testDeferPropKeepsTheGroupItIsGiven(): void
+    {
+        $this->assertSame('sidebar', (new DeferProp(static fn (): int => 1, 'sidebar'))->group());
+    }
+
+    public function testDeferPropAcceptsAGroupNameContainingSpaces(): void
+    {
+        $this->assertSame('side bar', (new DeferProp(static fn (): int => 1, 'side bar'))->group());
+    }
+
+    #[DataProvider('provideDeferPropRejectsABlankGroup')]
+    public function testDeferPropRejectsABlankGroup(string $group): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('group');
+
+        new DeferProp(static fn (): int => 1, $group);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function provideDeferPropRejectsABlankGroup(): iterable
+    {
+        yield 'empty' => [''];
+
+        yield 'whitespace only' => ['   '];
+    }
+
+    public function testDeferPropResolveReturnsTheCallbackResult(): void
+    {
+        $this->assertSame(['x' => 1], (new DeferProp(static fn (): array => ['x' => 1]))->resolve());
     }
 
     public function testAttributeEscapingPreventsBreakingOutOfDataPageAttribute(): void

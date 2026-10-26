@@ -23,7 +23,9 @@ final readonly class InertiaResponse
      *                                        may be a `ResolvableProp` — a `LazyProp` to
      *                                        defer resolution past partial-reload
      *                                        filtering, an `OptionalProp` to also leave
-     *                                        it out of a full render, or an `AlwaysProp`
+     *                                        it out of a full render, a `DeferProp` to
+     *                                        leave it out of a full render and have the
+     *                                        client fetch it afterwards, or an `AlwaysProp`
      *                                        to bypass that filtering entirely; any other value is
      *                                        sent as-is.
      * @param string               $version   The asset version echoed on the page object,
@@ -63,20 +65,43 @@ final readonly class InertiaResponse
     }
 
     /**
-     * Assembles the page object: exactly the four keys `component`,
-     * `props`, `url` and `version` — the shape both `asJson()` and `asHtml()` serialize
-     * verbatim.
+     * Assembles the page object: the keys `component`, `props`, `url` and `version`, plus
+     * `deferredProps` when this is not a partial reload and at least one `DeferProp` is
+     * declared — the shape both `asJson()` and `asHtml()` serialize verbatim.
      *
-     * @return array{component: string, props: array<string, mixed>, url: string, version: string}
+     * @return array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: array<string, list<string>>}
      */
     private function buildPageObject(IncomingRequest $request): array
     {
-        return [
+        $page = [
             'component' => $this->component,
             'props'     => $this->resolveProps($request),
             'url'       => $this->currentUrl($request),
             'version'   => $this->version,
         ];
+
+        $deferred = $this->isPartialReloadForThisComponent($request) ? [] : $this->deferredPropKeysByGroup();
+
+        return $deferred === [] ? $page : [...$page, 'deferredProps' => $deferred];
+    }
+
+    /**
+     * Groups the declared `DeferProp` keys by group name, in declaration order — the map the
+     * client reads to schedule one follow-up partial reload per group.
+     *
+     * @return array<string, list<string>>
+     */
+    private function deferredPropKeysByGroup(): array
+    {
+        $groups = [];
+
+        foreach ($this->props as $key => $value) {
+            if ($value instanceof DeferProp) {
+                $groups[$value->group()][] = (string) $key;
+            }
+        }
+
+        return $groups;
     }
 
     /**
@@ -97,7 +122,7 @@ final readonly class InertiaResponse
 
     /**
      * Determines which prop keys belong in this response: every declared prop but the
-     * `OptionalProp` ones on a full render, or — on a partial reload naming this component —
+     * `OptionalProp` and `DeferProp` ones on a full render, or — on a partial reload naming this component —
      * the `X-Inertia-Partial-Data` allow-list (every prop but the optional ones when it is
      * blank) minus `X-Inertia-Partial-Except`, unioned with every `AlwaysProp` key so it
      * survives regardless of either header.
@@ -121,8 +146,8 @@ final readonly class InertiaResponse
     }
 
     /**
-     * Every declared prop key whose value is an `OptionalProp` — the keys left out unless a
-     * partial reload for this component names them.
+     * Every declared prop key whose value is an `OptionalProp` or a `DeferProp` — the keys left
+     * out unless a partial reload for this component names them.
      *
      * @return list<string>
      */
@@ -130,7 +155,7 @@ final readonly class InertiaResponse
     {
         return array_keys(array_filter(
             $this->props,
-            static fn (mixed $value): bool => $value instanceof OptionalProp,
+            static fn (mixed $value): bool => $value instanceof OptionalProp || $value instanceof DeferProp,
         ));
     }
 
@@ -171,7 +196,7 @@ final readonly class InertiaResponse
 
     /**
      * Returns the prop as-is, or its resolved value when it is a `ResolvableProp` — the
-     * sole point in this class where a `LazyProp`, `OptionalProp` or `AlwaysProp` callback is invoked.
+     * sole point in this class where a `LazyProp`, `OptionalProp`, `DeferProp` or `AlwaysProp` callback is invoked.
      */
     private function resolvePropValue(mixed $value): mixed
     {
@@ -200,7 +225,7 @@ final readonly class InertiaResponse
      * Serializes the page object as the JSON response an Inertia-aware client expects,
      * marking it with the `X-Inertia: true` header the protocol contract requires.
      *
-     * @param array{component: string, props: array<string, mixed>, url: string, version: string} $page The four-key page object built by `buildPageObject()`.
+     * @param array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: array<string, list<string>>} $page The page object built by `buildPageObject()`.
      */
     private function asJson(ResponseInterface $response, array $page): ResponseInterface
     {
@@ -214,7 +239,7 @@ final readonly class InertiaResponse
      * Renders the root view shell with the page object embedded, HTML-attribute-escaped,
      * in `data-page` — the entry point for a first visit or a hard reload.
      *
-     * @param array{component: string, props: array<string, mixed>, url: string, version: string} $page The four-key page object built by `buildPageObject()`.
+     * @param array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: array<string, list<string>>} $page The page object built by `buildPageObject()`.
      */
     private function asHtml(ResponseInterface $response, array $page): ResponseInterface
     {

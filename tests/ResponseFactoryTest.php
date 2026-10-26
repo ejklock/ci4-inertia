@@ -84,6 +84,45 @@ final class ResponseFactoryTest extends CIUnitTestCase
         ], $page['props']);
     }
 
+    public function testDeferBuildsADeferPropInTheGivenGroup(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+        $prop = $factory->defer(static fn (): int => 7, 'g');
+
+        $this->assertSame('g', $prop->group());
+        $this->assertSame(7, $prop->resolve());
+    }
+
+    public function testDeferWithoutAGroupUsesTheDefaultGroup(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+        $this->assertSame('default', $factory->defer(static fn (): int => 7)->group());
+    }
+
+    public function testSharedDeferredPropIsListedAndLeftOutOfTheNextRender(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+        $factory->share('stats', $factory->defer(static fn (): int => 3, 'sidebar'));
+
+        $page = $this->renderPageObject($factory, 'Users/Index', ['users' => ['a']]);
+
+        $this->assertSame(['users' => ['a']], $page['props']);
+        $this->assertSame(['sidebar' => ['stats']], $page['deferredProps']);
+    }
+
+    public function testPerRenderValueOverridingASharedDeferredPropIsSentAndNotListedAsDeferred(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+        $factory->share('stats', $factory->defer(static fn (): int => 3));
+
+        $page = $this->renderPageObject($factory, 'Users/Index', ['stats' => 9]);
+
+        $this->assertSame(['stats' => 9], $page['props']);
+        $this->assertArrayNotHasKey('deferredProps', $page);
+    }
+
     public function testRenderAcceptsResolvablePropValuesWithoutThrowing(): void
     {
         $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');

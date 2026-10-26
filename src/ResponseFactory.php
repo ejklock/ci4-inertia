@@ -11,7 +11,7 @@ use InvalidArgumentException;
 
 /**
  * The public entry point a controller invokes to build an Inertia response: `render()`
- * for a page, `share()` for props carried across every render on this instance, `version()`
+ * for a page, `defer()` for a prop the client loads afterwards, `share()` for props carried across every render on this instance, `version()`
  * to override how the asset version is resolved, and `location()` to answer a stale-asset
  * reload. The props array is treated as an egress channel — only a scalar,
  * array, `null`, or `ResolvableProp` value may cross it, so a controller must state what
@@ -65,6 +65,22 @@ final class ResponseFactory
         $merged = [...$this->sharedProps, ...$props];
 
         return new InertiaResponse($component, $merged, $this->resolveVersion(), $this->rootView);
+    }
+
+    /**
+     * Marks a prop the first render leaves out and the client fetches in a follow-up request:
+     * pass the result as a prop value to `render()` or `share()`. Props in the same group load
+     * together in one request.
+     *
+     * @param callable $callback Produces the prop's value; invoked only when a partial reload
+     *                           names the prop.
+     * @param string   $group    The batch the client loads this prop in.
+     *
+     * @throws InvalidArgumentException When the group is empty or whitespace only.
+     */
+    public function defer(callable $callback, string $group = 'default'): DeferProp
+    {
+        return new DeferProp($callback, $group);
     }
 
     /**
