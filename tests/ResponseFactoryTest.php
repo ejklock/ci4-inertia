@@ -9,8 +9,11 @@ use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\ResponseInterface;
 use CodeIgniter\HTTP\SiteURI;
 use CodeIgniter\HTTP\UserAgent;
+use CodeIgniter\Session\Handlers\ArrayHandler;
 use CodeIgniter\Test\CIUnitTestCase;
+use CodeIgniter\Test\Mock\MockSession;
 use Config\App as AppConfig;
+use Config\Services;
 use Ejklock\Ci4Inertia\Config\Inertia as InertiaConfig;
 use Ejklock\Ci4Inertia\LazyProp;
 use Ejklock\Ci4Inertia\ResponseFactory;
@@ -335,5 +338,172 @@ final class ResponseFactoryTest extends CIUnitTestCase
         } finally {
             $config->rootView = $originalRootView;
         }
+    }
+
+    protected function tearDown(): void
+    {
+        Services::resetSingle('session');
+        service('superglobals')->setGlobalArray('cookie', []);
+        $_SESSION = [];
+
+        parent::tearDown();
+    }
+
+    private function newFactory(?IncomingRequest $request = null, bool $encryptHistory = false): ResponseFactory
+    {
+        return new ResponseFactory(
+            $request ?? $this->makeRequest('users'),
+            'app',
+            static fn (): string => 'v1',
+            $encryptHistory,
+        );
+    }
+
+    private function makeRequestWithSessionCookie(): IncomingRequest
+    {
+        $request = $this->makeRequest('users', ['X-Inertia' => 'true']);
+        $request->setGlobal('cookie', [(string) config('Session')->cookieName => 'abc']);
+
+        return $request;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function renderPageFrom(ResponseFactory $factory, IncomingRequest $request): array
+    {
+        $response = $factory->render('Users/Index')->toResponse($request, $this->makeResponse());
+
+        return json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+    }
+
+    public function testHistoryEncryptionIsAbsentByDefault(): void
+    {
+        $this->assertArrayNotHasKey('encryptHistory', $this->renderPageObject($this->newFactory(), 'Users/Index'));
+    }
+
+    public function testHistoryEncryptionIsAbsentWhenTheFactoryIsBuiltWithoutTheOption(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest('users'), 'app', static fn (): string => 'v1');
+
+        $this->assertArrayNotHasKey('encryptHistory', $this->renderPageObject($factory, 'Users/Index'));
+    }
+
+    public function testHistoryEncryptionFollowsTheConfiguredDefaultThroughTheService(): void
+    {
+        $config                 = config('Inertia');
+        $original               = $config->encryptHistory;
+        $config->encryptHistory = true;
+
+        try {
+            $page = $this->renderPageObject(service('inertia', false), 'Users/Index');
+
+            $this->assertTrue($page['encryptHistory']);
+        } finally {
+            $config->encryptHistory = $original;
+        }
+    }
+
+    public function testHistoryEncryptionCanBeSwitchedOffForLaterRenders(): void
+    {
+        $factory = $this->newFactory(null, true);
+        $factory->encryptHistory(false);
+
+        $this->assertArrayNotHasKey('encryptHistory', $this->renderPageObject($factory, 'Users/Index'));
+    }
+
+    public function testHistoryEncryptionCanBeSwitchedOnForLaterRendersOnly(): void
+    {
+        $factory = $this->newFactory();
+        $before  = $this->renderPageObject($factory, 'Users/Index');
+        $factory->encryptHistory();
+        $after = $this->renderPageObject($factory, 'Users/Index');
+
+        $this->assertArrayNotHasKey('encryptHistory', $before);
+        $this->assertTrue($after['encryptHistory']);
+    }
+
+    public function testHistoryClearingFiresOnTheNextRenderOnlyOnce(): void
+    {
+        $this->mockSession();
+        $factory = $this->newFactory();
+        $factory->clearHistory();
+
+        $first  = $this->renderPageObject($factory, 'Users/Index');
+        $second = $this->renderPageObject($factory, 'Users/Index');
+
+        $this->assertTrue($first['clearHistory']);
+        $this->assertArrayNotHasKey('clearHistory', $second);
+    }
+
+    public function testHistoryClearingRequestedBeforeARedirectFiresOnTheNextRequest(): void
+    {
+        $this->mockSession();
+        $this->newFactory()->clearHistory();
+
+        $request = $this->makeRequestWithSessionCookie();
+        $page    = $this->renderPageFrom($this->newFactory($request), $request);
+        $again   = $this->renderPageFrom($this->newFactory($request), $request);
+
+        $this->assertTrue($page['clearHistory']);
+        $this->assertArrayNotHasKey('clearHistory', $again);
+        $this->assertSame([], $_SESSION);
+    }
+
+    public function testHistoryClearingIsIgnoredWithoutTheSessionCookie(): void
+    {
+        $this->mockSession();
+        $_SESSION['inertia.clear_history'] = true;
+
+        $request = $this->makeRequest('users', ['X-Inertia' => 'true']);
+        $page    = $this->renderPageFrom($this->newFactory($request), $request);
+
+        $this->assertArrayNotHasKey('clearHistory', $page);
+        $this->assertSame(['inertia.clear_history' => true], $_SESSION);
+    }
+
+    public function testHistoryRenderWithoutReasonNeverTouchesTheSession(): void
+    {
+        $config  = config('Session');
+        $session = new class (new ArrayHandler($config, '0.0.0.0'), $config) extends MockSession {
+            /**
+             * @var list<string>
+             */
+            public array $calls = [];
+
+            public function has(string $key): bool
+            {
+                $this->calls[] = 'has';
+
+                return parent::has($key);
+            }
+
+            public function get(?string $key = null)
+            {
+                $this->calls[] = 'get';
+
+                return parent::get($key);
+            }
+
+            public function set($data, $value = null)
+            {
+                $this->calls[] = 'set';
+
+                parent::set($data, $value);
+            }
+
+            public function remove($key)
+            {
+                $this->calls[] = 'remove';
+
+                parent::remove($key);
+            }
+        };
+        Services::injectMock('session', $session);
+
+        $page = $this->renderPageObject($this->newFactory(), 'Users/Index');
+
+        $this->assertSame('Users/Index', $page['component']);
+        $this->assertSame([], $session->calls);
     }
 }

@@ -16,7 +16,7 @@ class Services extends BaseService
 {
     /**
      * The response factory for the current request, built from the `Inertia` config's root
-     * view and version resolver.
+     * view, version resolver and history-encryption default.
      */
     public static function inertia(bool $getShared = true): ResponseFactory
     {
@@ -29,6 +29,6 @@ class Services extends BaseService
 
         $config = config('Inertia');
 
-        return new ResponseFactory($request, $config->rootView, $config->version);
+        return new ResponseFactory($request, $config->rootView, $config->version, $config->encryptHistory);
     }
 }

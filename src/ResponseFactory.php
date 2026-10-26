@@ -21,6 +21,17 @@ use InvalidArgumentException;
 final class ResponseFactory
 {
     /**
+     * Session key holding a pending history clear until the next render pulls it.
+     */
+    private const CLEAR_HISTORY_SESSION_KEY = 'inertia.clear_history';
+
+    /**
+     * Whether this request already wrote the session, so a render may read it back even
+     * though the request carries no session cookie yet.
+     */
+    private bool $sessionTouched = false;
+
+    /**
      * @var array<string, mixed>
      */
     private array $sharedProps = [];
@@ -41,11 +52,15 @@ final class ResponseFactory
      *                                           most once per instance and memoized —
      *                                           `version()` replaces it and clears the
      *                                           memo for the next `render()`.
+     * @param bool              $encryptHistory  Whether pages ask the client to encrypt
+     *                                           their history state until `encryptHistory()`
+     *                                           overrides it.
      */
     public function __construct(
         private readonly IncomingRequest $request,
         private readonly string $rootView,
         private Closure $versionResolver,
+        private bool $encryptHistory = false,
     ) {
     }
 
@@ -65,7 +80,36 @@ final class ResponseFactory
 
         $merged = [...$this->sharedProps, ...$props];
 
-        return new InertiaResponse($component, $merged, $this->resolveVersion(), $this->rootView);
+        return new InertiaResponse(
+            $component,
+            $merged,
+            $this->resolveVersion(),
+            $this->rootView,
+            $this->encryptHistory,
+            $this->pullClearHistory(),
+        );
+    }
+
+    /**
+     * Turns history encryption on or off for the renders that follow, overriding the
+     * configured default; a render built earlier keeps what it was built with.
+     */
+    public function encryptHistory(bool $encrypt = true): void
+    {
+        $this->encryptHistory = $encrypt;
+    }
+
+    /**
+     * Asks the client to discard its encrypted history once: the next render, in this request
+     * or after a redirect, carries `clearHistory` and the request that sent it consumes the
+     * flag. The flag lives in the session, not in flash data, because flash data stays readable
+     * in the request that set it and would fire a second time on the next one.
+     */
+    public function clearHistory(): void
+    {
+        session()->set(self::CLEAR_HISTORY_SESSION_KEY, true);
+
+        $this->sessionTouched = true;
     }
 
     /**
@@ -161,6 +205,28 @@ final class ResponseFactory
         }
 
         return redirect()->to($url);
+    }
+
+    /**
+     * Reads and removes the pending history clear. The session is consulted only when this
+     * request wrote it or carries the session cookie, so a first visit with no cookie never
+     * starts a session just to look for the flag.
+     */
+    private function pullClearHistory(): bool
+    {
+        if (! $this->sessionTouched && $this->request->getCookie(config('Session')->cookieName) === null) {
+            return false;
+        }
+
+        $session = session();
+
+        if (! $session->has(self::CLEAR_HISTORY_SESSION_KEY)) {
+            return false;
+        }
+
+        $session->remove(self::CLEAR_HISTORY_SESSION_KEY);
+
+        return true;
     }
 
     /**

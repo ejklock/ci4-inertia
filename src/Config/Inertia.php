@@ -22,6 +22,12 @@ class Inertia extends BaseConfig
     public string $rootView = 'app';
 
     /**
+     * Whether every page asks the client to encrypt its history state; a response overrides it
+     * for the renders that follow with `ResponseFactory::encryptHistory()`.
+     */
+    public bool $encryptHistory = false;
+
+    /**
      * Resolves the asset version sent on every page object. A client whose
      * `X-Inertia-Version` differs from this value is running assets from a previous deploy
      * and is forced into a hard reload rather than fed data from the new backend.

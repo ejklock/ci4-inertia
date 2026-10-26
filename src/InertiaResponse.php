@@ -17,29 +17,35 @@ use CodeIgniter\HTTP\ResponseInterface;
 final readonly class InertiaResponse
 {
     /**
-     * @param string               $component The client-side component name Inertia
-     *                                        mounts, e.g. `Users/Index`.
-     * @param array<string, mixed> $props     The declared props, keyed by name. A value
-     *                                        may be a `ResolvableProp` — a `LazyProp` to
-     *                                        defer resolution past partial-reload
-     *                                        filtering, an `OptionalProp` to also leave
-     *                                        it out of a full render, a `DeferProp` to
-     *                                        leave it out of a full render and have the
-     *                                        client fetch it afterwards, a `MergeProp` to have
-     *                                        the client combine it with its current value, or an `AlwaysProp`
-     *                                        to bypass that filtering entirely; any other value is
-     *                                        sent as-is.
-     * @param string               $version   The asset version echoed on the page object,
-     *                                        compared by the client against the version
-     *                                        it booted with to detect stale assets.
-     * @param string               $rootView  The root view rendered for a non-Inertia
-     *                                        visit.
+     * @param string               $component      The client-side component name Inertia
+     *                                             mounts, e.g. `Users/Index`.
+     * @param array<string, mixed> $props          The declared props, keyed by name. A value
+     *                                             may be a `ResolvableProp` — a `LazyProp` to
+     *                                             defer resolution past partial-reload
+     *                                             filtering, an `OptionalProp` to also leave
+     *                                             it out of a full render, a `DeferProp` to
+     *                                             leave it out of a full render and have the
+     *                                             client fetch it afterwards, a `MergeProp` to have
+     *                                             the client combine it with its current value, or an `AlwaysProp`
+     *                                             to bypass that filtering entirely; any other value is
+     *                                             sent as-is.
+     * @param string               $version        The asset version echoed on the page object,
+     *                                             compared by the client against the version
+     *                                             it booted with to detect stale assets.
+     * @param string               $rootView       The root view rendered for a non-Inertia
+     *                                             visit.
+     * @param bool                 $encryptHistory Whether the page object asks the client to
+     *                                             encrypt this page's history state.
+     * @param bool                 $clearHistory   Whether the page object asks the client to
+     *                                             discard its encrypted history by rotating the key.
      */
     public function __construct(
         private string $component,
         private array $props,
         private string $version,
         private string $rootView,
+        private bool $encryptHistory = false,
+        private bool $clearHistory = false,
     ) {
     }
 
@@ -69,9 +75,10 @@ final readonly class InertiaResponse
      * Assembles the page object: the keys `component`, `props`, `url` and `version`, plus
      * `deferredProps` (a group name → keys object) when this is not a partial reload and at
      * least one `DeferProp` is declared, plus the merge lists (`mergeProps`, `prependProps`, `deepMergeProps`,
-     * `matchPropsOn`) that apply — the shape both `asJson()` and `asHtml()` serialize verbatim.
+     * `matchPropsOn`) that apply, plus `encryptHistory` and `clearHistory` when each holds — the
+     * shape both `asJson()` and `asHtml()` serialize verbatim.
      *
-     * @return array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: object, mergeProps?: list<string>, prependProps?: list<string>, deepMergeProps?: list<string>, matchPropsOn?: list<string>}
+     * @return array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: object, mergeProps?: list<string>, prependProps?: list<string>, deepMergeProps?: list<string>, matchPropsOn?: list<string>, encryptHistory?: true, clearHistory?: true}
      */
     private function buildPageObject(IncomingRequest $request): array
     {
@@ -86,7 +93,17 @@ final readonly class InertiaResponse
         // An object, so integer-like group names stay a JSON map instead of collapsing into a list.
         $page = $deferred === [] ? $page : [...$page, 'deferredProps' => (object) $deferred];
 
-        return array_merge($page, $this->mergeMetadata($request));
+        $page = array_merge($page, $this->mergeMetadata($request));
+
+        if ($this->encryptHistory) {
+            $page['encryptHistory'] = true;
+        }
+
+        if ($this->clearHistory) {
+            $page['clearHistory'] = true;
+        }
+
+        return $page;
     }
 
     /**
@@ -294,7 +311,7 @@ final readonly class InertiaResponse
      * Serializes the page object as the JSON response an Inertia-aware client expects,
      * marking it with the `X-Inertia: true` header the protocol contract requires.
      *
-     * @param array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: object, mergeProps?: list<string>, prependProps?: list<string>, deepMergeProps?: list<string>, matchPropsOn?: list<string>} $page The page object built by `buildPageObject()`.
+     * @param array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: object, mergeProps?: list<string>, prependProps?: list<string>, deepMergeProps?: list<string>, matchPropsOn?: list<string>, encryptHistory?: true, clearHistory?: true} $page The page object built by `buildPageObject()`.
      */
     private function asJson(ResponseInterface $response, array $page): ResponseInterface
     {
@@ -308,7 +325,7 @@ final readonly class InertiaResponse
      * Renders the root view shell with the page object embedded, HTML-attribute-escaped,
      * in `data-page` — the entry point for a first visit or a hard reload.
      *
-     * @param array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: object, mergeProps?: list<string>, prependProps?: list<string>, deepMergeProps?: list<string>, matchPropsOn?: list<string>} $page The page object built by `buildPageObject()`.
+     * @param array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: object, mergeProps?: list<string>, prependProps?: list<string>, deepMergeProps?: list<string>, matchPropsOn?: list<string>, encryptHistory?: true, clearHistory?: true} $page The page object built by `buildPageObject()`.
      */
     private function asHtml(ResponseInterface $response, array $page): ResponseInterface
     {

@@ -791,4 +791,79 @@ final class InertiaResponseTest extends CIUnitTestCase
             yield implode('+', $subset) => [$propNames, $subset];
         }
     }
+
+    public function testPageWithDefaultsCarriesNeitherHistoryKeyInEitherForm(): void
+    {
+        $inertia = new InertiaResponse('Users/Index', [], 'v1', self::SHELL_VIEW);
+
+        $json = json_decode(
+            (string) $inertia->toResponse($this->makeRequest('users', ['X-Inertia' => 'true']), $this->makeResponse())->getBody(),
+            true,
+            flags: JSON_THROW_ON_ERROR,
+        );
+        $html = $this->decodeDataPageAttribute(
+            (string) $inertia->toResponse($this->makeRequest('users'), $this->makeResponse())->getBody(),
+        );
+
+        $this->assertSame(['component', 'props', 'url', 'version'], array_keys($json));
+        $this->assertSame(['component', 'props', 'url', 'version'], array_keys($html));
+    }
+
+    public function testHistoryEncryptionIsListedOnlyWhenEnabled(): void
+    {
+        $inertia = new InertiaResponse('Users/Index', [], 'v1', self::SHELL_VIEW, true);
+
+        $page = json_decode(
+            (string) $inertia->toResponse($this->makeRequest('users', ['X-Inertia' => 'true']), $this->makeResponse())->getBody(),
+            true,
+            flags: JSON_THROW_ON_ERROR,
+        );
+
+        $this->assertTrue($page['encryptHistory']);
+        $this->assertArrayNotHasKey('clearHistory', $page);
+    }
+
+    public function testHistoryClearingIsListedOnlyWhenRequested(): void
+    {
+        $inertia = new InertiaResponse('Users/Index', [], 'v1', self::SHELL_VIEW, false, true);
+
+        $page = json_decode(
+            (string) $inertia->toResponse($this->makeRequest('users', ['X-Inertia' => 'true']), $this->makeResponse())->getBody(),
+            true,
+            flags: JSON_THROW_ON_ERROR,
+        );
+
+        $this->assertTrue($page['clearHistory']);
+        $this->assertArrayNotHasKey('encryptHistory', $page);
+    }
+
+    public function testHistoryFlagsSurviveAPartialReloadForTheSameComponent(): void
+    {
+        $inertia = new InertiaResponse('Users/Index', ['users' => ['a']], 'v1', self::SHELL_VIEW, true, true);
+
+        $page = json_decode(
+            (string) $inertia->toResponse($this->makeRequest('users', [
+                'X-Inertia'                   => 'true',
+                'X-Inertia-Partial-Component' => 'Users/Index',
+                'X-Inertia-Partial-Data'      => 'users',
+            ]), $this->makeResponse())->getBody(),
+            true,
+            flags: JSON_THROW_ON_ERROR,
+        );
+
+        $this->assertTrue($page['encryptHistory']);
+        $this->assertTrue($page['clearHistory']);
+    }
+
+    public function testHistoryFlagsAreInTheHtmlShellDataPage(): void
+    {
+        $inertia = new InertiaResponse('Users/Index', [], 'v1', self::SHELL_VIEW, true, true);
+
+        $page = $this->decodeDataPageAttribute(
+            (string) $inertia->toResponse($this->makeRequest('users'), $this->makeResponse())->getBody(),
+        );
+
+        $this->assertTrue($page['encryptHistory']);
+        $this->assertTrue($page['clearHistory']);
+    }
 }
