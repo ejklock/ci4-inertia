@@ -2,6 +2,7 @@
 
 /tests                   export-ignore
 /.github                 export-ignore
+/scripts                 export-ignore
 /docker                  export-ignore
 /Dockerfile.dev          export-ignore
 /compose.yml             export-ignore

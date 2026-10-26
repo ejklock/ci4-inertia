@@ -1,0 +1,9 @@
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "*": hash-pin
+  # The local composite action keeps the './' path form that act and every
+  # GitHub runner resolve; the '$/' form is a style hint, not a security finding.
+  self-repository:
+    disable: true

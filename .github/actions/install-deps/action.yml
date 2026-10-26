@@ -1,0 +1,35 @@
+name: Install dependencies
+description: Sets up PHP with the extensions the package needs, then resolves and installs the composer dependencies at the lowest or the highest versions composer.json allows.
+inputs:
+  php-version:
+    description: PHP version
+    required: true
+  dependency-versions:
+    description: Which versions composer resolves, lowest or highest
+    required: false
+    default: highest
+  coverage:
+    description: Coverage driver for setup-php, none or xdebug
+    required: false
+    default: none
+  drop-dev-packages:
+    description: Space-separated require-dev packages to remove for this run only, for packages that do not support the PHP version
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+      with:
+        php-version: ${{ inputs.php-version }}
+        extensions: intl, mbstring
+        coverage: ${{ inputs.coverage }}
+        tools: composer
+    - if: inputs.drop-dev-packages != ''
+      shell: bash
+      env:
+        PACKAGES: ${{ inputs.drop-dev-packages }}
+      run: composer remove --dev --no-update --no-interaction $PACKAGES
+    - uses: ramsey/composer-install@65e4f84970763564f46a70b8a54b90d033b3bdda # 4.0.0
+      with:
+        dependency-versions: ${{ inputs.dependency-versions }}
