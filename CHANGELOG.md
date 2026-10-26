@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - `InertiaFilter` shares the validation errors that `redirect()->withInput()` flashes as the `errors` prop, so a controller no longer needs `->with('errors', ...)`; an `errors` session array still wins whole.
+- `InertiaFilter::version(IncomingRequest $request): string`, a protected hook an extending filter overrides to compute the asset version at runtime; it defaults to the config's `version`.
+
+### Changed
+
+- The stale-version check and the page object now share the version the filter's `version()` returns, resolved once per request before the controller runs; a `service('inertia')->version()` call in a controller is not seen by the check.
 
 ## [0.1.0] - 2026-10-26
 

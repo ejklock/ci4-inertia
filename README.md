@@ -223,7 +223,24 @@ class Inertia extends BaseInertia
 }
 ```
 
-Set the version in the config only. `InertiaFilter` compares the client's `X-Inertia-Version` with the config's `version`, while the page object carries the version `ResponseFactory` resolves. A runtime `service('inertia')->version(...)` call changes only the version in the page object, so a value that differs from the config makes every Inertia `GET` visit answer `409` and each navigation becomes a full page reload.
+The config's `version` is the default. To compute the version at runtime, override `version(IncomingRequest $request): string` in an extending filter (the one you register under the `inertia` alias):
+
+```php
+namespace App\Filters;
+
+use CodeIgniter\HTTP\IncomingRequest;
+use Ejklock\Ci4Inertia\Filters\InertiaFilter as BaseInertiaFilter;
+
+class InertiaFilter extends BaseInertiaFilter
+{
+    protected function version(IncomingRequest $request): string
+    {
+        return parent::version($request) . ':' . $request->getHeaderLine('X-Tenant');
+    }
+}
+```
+
+The filter calls the hook once per request, before the controller, and uses its result both for the stale-version check and for the page object. A `service('inertia')->version(...)` call inside a controller runs after the check, so the check never compares it: the page object then carries a version that differs from the one the client is compared against, and every Inertia `GET` visit answers `409`, turning each navigation into a full page reload. Set the version in the config or in the filter hook, not in a controller.
 
 ## External redirects
 
@@ -354,7 +371,7 @@ final class UsersTest extends CIUnitTestCase
 ```
 
 - `assertInertia(TestResponse $result, ?Closure $callback = null): AssertableInertia` fails if the response has no page.
-- `inertiaHeaders(string $version = '', array $extra = []): array` builds the Inertia request headers. Pass the app's current asset version, `(config('Inertia')->version)()`: a version that differs from the config gets a `409` from the filter instead of the page.
+- `inertiaHeaders(string $version = '', array $extra = []): array` builds the Inertia request headers. Pass the app's current asset version, the one your filter's `version()` returns (by default `(config('Inertia')->version)()`): a version that differs from it gets a `409` from the filter instead of the page.
 - `AssertableInertia` methods: `component()`, `url()`, `version()`, `has($path, ?$count)`, `missing()`, `where($path, $expected)` (a value or a closure returning bool), `count()`, `prop()` and `page()`. Paths use dots (`users.0.name`); a prop whose value is `null` counts as present.
 
 ## Configuration

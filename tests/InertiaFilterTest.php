@@ -9,6 +9,7 @@ use CodeIgniter\Config\BaseService;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\Test\CIUnitTestCase;
 use CodeIgniter\Test\FeatureTestTrait;
+use CodeIgniter\Test\TestResponse;
 use Ejklock\Ci4Inertia\AlwaysProp;
 use Ejklock\Ci4Inertia\Filters\InertiaFilter;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -28,6 +29,7 @@ final class InertiaFilterTest extends CIUnitTestCase
 
     private const CURRENT_VERSION = 'inertia-filter-test-version';
 
+    public static int $hookCalls = 0;
     private Closure $originalVersion;
     private string $originalRootView;
 
@@ -248,6 +250,118 @@ final class InertiaFilterTest extends CIUnitTestCase
         $this->assertSame([], $page['props']['errors']);
     }
 
+    /**
+     * Registers an extending filter whose `version()` hook returns the request's
+     * `X-Build` header when it carries one, else `from-hook`, and counts its own calls.
+     */
+    private function useVersionHookFilter(): void
+    {
+        self::$hookCalls = 0;
+
+        $extending = new class () extends InertiaFilter {
+            protected function version(IncomingRequest $request): string
+            {
+                InertiaFilterTest::$hookCalls++;
+
+                return $request->getHeaderLine('X-Build') ?: 'from-hook';
+            }
+        };
+
+        config('Filters')->aliases['inertia'] = $extending::class;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function pageFrom(TestResponse $result): array
+    {
+        return json_decode((string) $result->response()->getBody(), true, flags: JSON_THROW_ON_ERROR);
+    }
+
+    public function testAnInertiaGetCarryingTheHookVersionRendersThatVersion(): void
+    {
+        $this->useVersionHookFilter();
+        $this->withRoutes([$this->renderingRoute()]);
+
+        $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Inertia-Version' => 'from-hook'])->get('/page');
+
+        $result->assertStatus(200);
+        $this->assertSame('from-hook', $this->pageFrom($result)['version']);
+    }
+
+    public function testAnInertiaGetCarryingTheConfigVersionIsStaleAgainstTheHookVersion(): void
+    {
+        $this->useVersionHookFilter();
+        $this->withRoutes([$this->renderingRoute()]);
+
+        $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Inertia-Version' => self::CURRENT_VERSION])->get('/page');
+
+        $result->assertStatus(409);
+        $result->assertHeader('X-Inertia-Version', 'from-hook');
+    }
+
+    public function testAFullPageLoadEmbedsTheHookVersionInTheRootView(): void
+    {
+        $this->useVersionHookFilter();
+        $this->withRoutes([$this->renderingRoute()]);
+
+        $result = $this->get('/page');
+
+        $result->assertStatus(200);
+        $this->assertSame(1, preg_match('/data-page="([^"]*)"/', (string) $result->response()->getBody(), $matches));
+
+        $page = json_decode(html_entity_decode($matches[1]), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame('from-hook', $page['version']);
+    }
+
+    public function testAnInertiaPostRendersTheHookVersion(): void
+    {
+        $this->useVersionHookFilter();
+        $this->withRoutes([
+            ['POST', 'page', static fn () => service('inertia')
+                ->render('Page/Index', [])
+                ->toResponse(service('request'), service('response')), ['filter' => 'inertia']],
+        ]);
+
+        $result = $this->withHeaders(['X-Inertia' => 'true'])->post('/page');
+
+        $result->assertStatus(200);
+        $this->assertSame('from-hook', $this->pageFrom($result)['version']);
+    }
+
+    public function testTheHookReceivesTheCurrentRequest(): void
+    {
+        $this->useVersionHookFilter();
+        $this->withRoutes([$this->renderingRoute()]);
+
+        $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Inertia-Version' => 'build-42', 'X-Build' => 'build-42'])
+            ->get('/page');
+
+        $result->assertStatus(200);
+        $this->assertSame('build-42', $this->pageFrom($result)['version']);
+    }
+
+    public function testTheHookRunsOnceOnAnInertiaGetThatRenders(): void
+    {
+        $this->useVersionHookFilter();
+        $this->withRoutes([$this->renderingRoute()]);
+
+        $this->withHeaders(['X-Inertia' => 'true', 'X-Inertia-Version' => 'from-hook'])->get('/page')->assertStatus(200);
+
+        $this->assertSame(1, self::$hookCalls);
+    }
+
+    public function testTheHookRunsOnceOnAStaleVersionResponse(): void
+    {
+        $this->useVersionHookFilter();
+        $this->withRoutes([$this->renderingRoute()]);
+
+        $this->withHeaders(['X-Inertia' => 'true', 'X-Inertia-Version' => 'stale'])->get('/page')->assertStatus(409);
+
+        $this->assertSame(1, self::$hookCalls);
+    }
+
     public function testErrorsPropIsAnEmptyObjectWhenSessionHasNoValidationErrors(): void
     {
         $this->withRoutes([$this->renderingRoute()]);
@@ -325,8 +439,8 @@ final class InertiaFilterTest extends CIUnitTestCase
     public static function provideErrorsPropFollowsTheSessionErrorSourcePrecedence(): iterable
     {
         yield 'only the errors flash' => [
-            ['errors' => ['subject' => 'Subject is required.']],
-            ['subject' => 'Subject is required.'],
+            ['errors' => ['subject' => 'Subject is required.', 'body' => 'Body is required.']],
+            ['subject' => 'Subject is required.', 'body' => 'Body is required.'],
         ];
 
         yield 'only the withInput validation errors' => [
@@ -336,10 +450,10 @@ final class InertiaFilterTest extends CIUnitTestCase
 
         yield 'both sources: the errors flash wins whole' => [
             [
-                'errors'                => ['subject' => 'Subject is required.'],
+                'errors'                => ['subject' => 'Subject is required.', 'body' => 'Body is required.'],
                 '_ci_validation_errors' => ['email' => 'Email is invalid.'],
             ],
-            ['subject' => 'Subject is required.'],
+            ['subject' => 'Subject is required.', 'body' => 'Body is required.'],
         ];
 
         yield 'a non-array errors flash falls through to the validation errors' => [
