@@ -7,6 +7,8 @@
 
 Server-side [Inertia.js](https://inertiajs.com) adapter for CodeIgniter 4. Build a single-page app with Vue, React or Svelte while keeping CodeIgniter routing, controllers, sessions and validation.
 
+New here? Start with the [Quickstart](#quickstart).
+
 ## Requirements
 
 | Package | Version |
@@ -22,6 +24,154 @@ composer require ejklock/ci4-inertia
 ```
 
 The package registers the `inertia` service through CodeIgniter's package discovery. Nothing else is published into your app.
+
+## Quickstart
+
+Follow these steps in order, from a fresh CodeIgniter 4.7 app, to render a first Vue 3 page through Vite. Each step names the file it writes. The sections after it are the reference.
+
+1. Install the package.
+
+   ```bash
+   composer require ejklock/ci4-inertia
+   ```
+
+2. Install the client. A fresh CodeIgniter app has no `package.json`; run `npm init -y` first, then set `"type": "module"` and add the `dev` script in the file it creates.
+
+   ```bash
+   npm init -y
+   npm install @inertiajs/vue3@^2 vue
+   npm install -D vite @vitejs/plugin-vue
+   ```
+
+   The `@^2` range matters: npm's `latest` tag is the 3.x client, which reads the page from a script tag instead of the `data-page` attribute and is not supported by this package yet.
+
+   `package.json` (the keys to add):
+
+   ```json
+   {
+     "type": "module",
+     "scripts": {
+       "dev": "vite"
+     }
+   }
+   ```
+
+3. Write `vite.config.js`. `php spark serve` listens on `http://localhost:8080`, so that origin is allowed to load assets from the Vite dev server. If `spark serve` or Vite run on another port, or you open the page as `127.0.0.1`, change `server.cors.origin` and the root view URLs in step 6 to match.
+
+   ```js
+   import { defineConfig } from 'vite'
+   import vue from '@vitejs/plugin-vue'
+
+   export default defineConfig({
+     plugins: [vue()],
+     server: {
+       cors: {
+         origin: 'http://localhost:8080',
+       },
+     },
+   })
+   ```
+
+4. Write `resources/js/app.js`.
+
+   ```js
+   import { createApp, h } from 'vue'
+   import { createInertiaApp } from '@inertiajs/vue3'
+
+   createInertiaApp({
+     resolve: name => {
+       const pages = import.meta.glob('./Pages/**/*.vue', { eager: true })
+       return pages[`./Pages/${name}.vue`]
+     },
+     setup({ el, App, props, plugin }) {
+       createApp({ render: () => h(App, props) })
+         .use(plugin)
+         .mount(el)
+     },
+   })
+   ```
+
+5. Write the page component `resources/js/Pages/Home.vue`. The name `Home` is the component name the controller passes to `Inertia::render()`.
+
+   ```vue
+   <script setup>
+   defineProps({ greeting: String })
+   </script>
+
+   <template>
+     <h1>{{ greeting }}</h1>
+   </template>
+   ```
+
+6. Write the root view `app/Views/app.php`. It receives the page object in `$page`. In development it loads the Vite dev server; loading the built files in production is covered in [Client setup](#client-setup).
+
+   ```php
+   <!DOCTYPE html>
+   <html lang="en">
+   <head>
+       <meta charset="utf-8">
+       <meta name="viewport" content="width=device-width, initial-scale=1">
+       <title>My app</title>
+       <script type="module" src="http://localhost:5173/@vite/client"></script>
+       <script type="module" src="http://localhost:5173/resources/js/app.js"></script>
+   </head>
+   <body>
+   <div id="app" data-page="<?= esc($page, 'attr') ?>"></div>
+   </body>
+   </html>
+   ```
+
+7. Register the filter in `app/Config/Filters.php` (see [Filters](#filters)).
+
+   ```php
+   use Ejklock\Ci4Inertia\Filters\InertiaFilter;
+
+   public array $aliases = [
+       // ...
+       'inertia' => InertiaFilter::class,
+   ];
+
+   public array $globals = [
+       'before' => ['inertia'],
+       'after'  => ['inertia'],
+   ];
+   ```
+
+8. Confirm the route in `app/Config/Routes.php`. The starter already has it, so add the line only if it is missing.
+
+   ```php
+   $routes->get('/', 'Home::index');
+   ```
+
+9. Write the controller `app/Controllers/Home.php` (see [Rendering pages](#rendering-pages)).
+
+   ```php
+   <?php
+
+   namespace App\Controllers;
+
+   use Ejklock\Ci4Inertia\Inertia;
+
+   class Home extends BaseController
+   {
+       public function index()
+       {
+           return Inertia::render('Home', ['greeting' => 'Hello from Inertia'])
+               ->toResponse($this->request, $this->response);
+       }
+   }
+   ```
+
+10. Run both servers in two terminals, then open <http://localhost:8080>.
+
+    ```bash
+    php spark serve
+    npm run dev
+    ```
+
+    The page shows the greeting. Visits made with `<Link>` or `router` from here on get JSON.
+
+Next: [Client setup](#client-setup) for production builds, [Rendering pages](#rendering-pages) for props, and [Filters](#filters) for CSRF and filter order.
 
 ## Root view
 
@@ -106,7 +256,7 @@ public bool $tokenRandomize = true;
 
 ## Client setup
 
-Client setup is not repeated here. Follow the official guide for your framework at <https://inertiajs.com/client-side-setup> and install the 2.x adapter (`@inertiajs/vue3`, `@inertiajs/react` or `@inertiajs/svelte`).
+Client setup is not repeated here. Follow the official guide for your framework at <https://inertiajs.com/client-side-setup> and install the 2.x adapter (`@inertiajs/vue3@^2`, `@inertiajs/react@^2` or `@inertiajs/svelte@^2`). The npm `latest` tag is 3.x, which this package does not support yet, so keep the `@^2` range.
 
 Minimal Vite notes:
 
