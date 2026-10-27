@@ -6,11 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-26
+
 ### Added
 
 - `Ejklock\Ci4Inertia\Inertia`, a static shortcut for `service('inertia')` with the same methods as `ResponseFactory`: `Inertia::render('Users/Index', [...])`.
 - `InertiaFilter` shares the validation errors that `redirect()->withInput()` flashes as the `errors` prop, so a controller no longer needs `->with('errors', ...)`; an `errors` session array still wins whole.
 - `InertiaFilter::version(IncomingRequest $request): string`, a protected hook an extending filter overrides to compute the asset version at runtime; it defaults to the config's `version`.
+- A README quickstart from a fresh CodeIgniter app to a first Vue page, with the Inertia client pinned to 2.x.
 
 ### Changed
 
@@ -32,5 +35,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - History encryption (`encryptHistory` setting, `ResponseFactory::encryptHistory()`) and one-shot history clearing (`ResponseFactory::clearHistory()`).
 - Test helpers `InertiaTestTrait` and `AssertableInertia` for feature tests.
 
-[Unreleased]: https://github.com/ejklock/ci4-inertia/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ejklock/ci4-inertia/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/ejklock/ci4-inertia/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ejklock/ci4-inertia/releases/tag/v0.1.0
