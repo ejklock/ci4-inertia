@@ -29,6 +29,6 @@ class Services extends BaseService
 
         $config = config('Inertia');
 
-        return new ResponseFactory($request, $config->rootView, $config->version, $config->encryptHistory);
+        return new ResponseFactory($request, $config->rootView, $config->version, $config->encryptHistory, $config->preserveBigIntegers);
     }
 }

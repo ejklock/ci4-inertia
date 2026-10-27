@@ -28,6 +28,14 @@ class Inertia extends BaseConfig
     public bool $encryptHistory = false;
 
     /**
+     * Whether every page sends integers outside JavaScript's safe range (beyond 2^53 - 1) as
+     * `{"$bigint": "<digits>"}` markers in its props and flash data and carries
+     * `preserveBigIntegers: true`, so the client can revive them without losing precision; a
+     * single response opts in or out with `InertiaResponse::preserveBigIntegers()`.
+     */
+    public bool $preserveBigIntegers = false;
+
+    /**
      * Whether `InertiaFilter` records an Inertia `GET` as CodeIgniter's previous URL
      * (`_ci_previous_url`), so `redirect()->back()` returns to the page the visitor is on.
      * CodeIgniter stores that URL only for non-AJAX HTML responses, so after an Inertia visit

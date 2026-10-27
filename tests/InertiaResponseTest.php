@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Ejklock\Ci4Inertia\Tests;
 
+use CodeIgniter\Format\Exceptions\FormatException;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\ResponseInterface;
 use CodeIgniter\HTTP\SiteURI;
@@ -12,6 +13,8 @@ use CodeIgniter\Test\CIUnitTestCase;
 use CodeIgniter\View\View;
 use Config\App as AppConfig;
 use Config\Services;
+use DateTimeImmutable;
+use DateTimeZone;
 use Ejklock\Ci4Inertia\AlwaysProp;
 use Ejklock\Ci4Inertia\DeferProp;
 use Ejklock\Ci4Inertia\InertiaResponse;
@@ -21,7 +24,9 @@ use Ejklock\Ci4Inertia\ProvidesInertiaProperties;
 use Ejklock\Ci4Inertia\RenderContext;
 use Ejklock\Ci4Inertia\ResponseFactory;
 use InvalidArgumentException;
+use JsonSerializable;
 use PHPUnit\Framework\Attributes\DataProvider;
+use stdClass;
 
 /**
  * Verifies `InertiaResponse` against the protocol contract in docs/architecture/inertia.md:
@@ -1215,5 +1220,242 @@ final class InertiaResponseTest extends CIUnitTestCase
             unlink($directory . 'data_shell.php');
             rmdir($directory);
         }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function bigIntegerPage(mixed $value, bool $asJson = true): array
+    {
+        $inertia = (new InertiaResponse('Users/Index', ['value' => $value], 'v1', self::SHELL_VIEW))->preserveBigIntegers();
+
+        if ($asJson) {
+            return $this->pageOf($inertia);
+        }
+
+        return $this->decodePageScript((string) $inertia->toResponse($this->makeRequest('users'), $this->makeResponse())->getBody());
+    }
+
+    private static function plainObject(): object
+    {
+        return new class () {
+            public int $id        = PHP_INT_MAX;
+            public string $name   = 'x';
+            protected int $hidden = PHP_INT_MAX;
+            private int $secret   = PHP_INT_MAX;
+
+            public function secret(): int
+            {
+                return $this->secret;
+            }
+        };
+    }
+
+    #[DataProvider('provideAnOptedInPageWrapsIntegersOutsideTheSafeRangeInBothWireForms')]
+    public function testAnOptedInPageWrapsIntegersOutsideTheSafeRangeInBothWireForms(mixed $value, mixed $expected): void
+    {
+        foreach ([true, false] as $asJson) {
+            $page = $this->bigIntegerPage($value, $asJson);
+
+            $this->assertSame($expected, $page['props']['value']);
+            $this->assertTrue($page['preserveBigIntegers']);
+        }
+    }
+
+    /**
+     * @return array<string, array{0: mixed, 1: mixed}>
+     */
+    public static function provideAnOptedInPageWrapsIntegersOutsideTheSafeRangeInBothWireForms(): iterable
+    {
+        $marker = static fn (string $digits): array => ['$bigint' => $digits];
+
+        return [
+            'largest safe integer stays an integer'   => [9007199254740991, 9007199254740991],
+            'one past the safe range is wrapped'      => [9007199254740992, $marker('9007199254740992')],
+            'smallest safe integer stays an integer'  => [-9007199254740991, -9007199254740991],
+            'one below the safe range is wrapped'     => [-9007199254740992, $marker('-9007199254740992')],
+            'PHP_INT_MAX is wrapped'                  => [PHP_INT_MAX, $marker((string) PHP_INT_MAX)],
+            'PHP_INT_MIN is wrapped'                  => [PHP_INT_MIN, $marker((string) PHP_INT_MIN)],
+            'a float is untouched'                    => [1.5, 1.5],
+            'a numeric string is untouched'           => ['9007199254740993', '9007199254740993'],
+            'a nested array is wrapped at depth'      => [['a' => ['b' => ['c' => PHP_INT_MAX]]], ['a' => ['b' => ['c' => $marker((string) PHP_INT_MAX)]]]],
+            'a list is wrapped at depth'              => [[1, PHP_INT_MAX, [PHP_INT_MIN]], [1, $marker((string) PHP_INT_MAX), [$marker((string) PHP_INT_MIN)]]],
+            'a JsonSerializable result is wrapped'    => [new BigIntegerSerializable(), ['id' => $marker((string) PHP_INT_MAX)]],
+            'an int-backed enum is wrapped'           => [BigIntegerBackedEnum::Huge, $marker((string) PHP_INT_MAX)],
+            'a small int-backed enum is its value'    => [BigIntegerBackedEnum::Small, 7],
+            'a string-backed enum is its value'       => [BigIntegerStringEnum::Name, 'name'],
+            'a DateTime keeps its own JSON shape'     => [new DateTimeImmutable('2024-01-02 03:04:05', new DateTimeZone('UTC')), ['date' => '2024-01-02 03:04:05.000000', 'timezone_type' => 3, 'timezone' => 'UTC']],
+            'a plain object is wrapped by its fields' => [self::plainObject(), ['id' => $marker((string) PHP_INT_MAX), 'name' => 'x']],
+        ];
+    }
+
+    public function testAStdClassHoldingABigIntegerStaysAJsonObjectWithTheMarkerInside(): void
+    {
+        $object        = new stdClass();
+        $object->id    = PHP_INT_MAX;
+        $object->empty = new stdClass();
+
+        $inertia = (new InertiaResponse('Users/Index', ['value' => $object], 'v1', self::SHELL_VIEW))->preserveBigIntegers();
+        $body    = (string) $inertia->toResponse($this->makeRequest('users', ['X-Inertia' => 'true']), $this->makeResponse())->getBody();
+
+        $this->assertSame(
+            '{"id":{"$bigint":"9223372036854775807"},"empty":{}}',
+            json_encode(json_decode($body, false, flags: JSON_THROW_ON_ERROR)->props->value, JSON_THROW_ON_ERROR),
+        );
+    }
+
+    public function testAPureEnumIsLeftForJsonEncodeToReject(): void
+    {
+        $this->expectException(FormatException::class);
+
+        $this->bigIntegerPage(BigIntegerPureEnum::Case, true);
+    }
+
+    public function testAPlainObjectSharedByTwoBranchesIsWrappedInBoth(): void
+    {
+        $shared     = new stdClass();
+        $shared->id = PHP_INT_MAX;
+        $page       = $this->bigIntegerPage(['left' => $shared, 'right' => ['again' => $shared]]);
+        $expected   = ['$bigint' => (string) PHP_INT_MAX];
+
+        $this->assertSame($expected, $page['props']['value']['left']['id']);
+        $this->assertSame($expected, $page['props']['value']['right']['again']['id']);
+    }
+
+    public function testAPlainObjectSharedByTwoPropertiesOfAnObjectIsWrappedInBoth(): void
+    {
+        $shared     = new stdClass();
+        $shared->id = PHP_INT_MAX;
+        $parent     = new stdClass();
+        $parent->a  = $shared;
+        $parent->b  = $shared;
+        $page       = $this->bigIntegerPage($parent);
+        $expected   = ['$bigint' => (string) PHP_INT_MAX];
+
+        $this->assertSame($expected, $page['props']['value']['a']['id']);
+        $this->assertSame($expected, $page['props']['value']['b']['id']);
+    }
+
+    public function testAnObjectExtendingAnInternalClassKeepsItsOwnJsonShape(): void
+    {
+        $date = new class ('2024-01-02 03:04:05', new DateTimeZone('UTC')) extends DateTimeImmutable {
+            public int $big = PHP_INT_MAX;
+        };
+        $page = $this->bigIntegerPage($date);
+
+        $this->assertSame(PHP_INT_MAX, $page['props']['value']['big']);
+        $this->assertSame('2024-01-02 03:04:05.000000', $page['props']['value']['date']);
+    }
+
+    public function testASelfReferencingObjectDoesNotLoopAndItsReferenceIsLeftForTheJsonEncoder(): void
+    {
+        $loop       = new stdClass();
+        $loop->self = $loop;
+        $loop->id   = PHP_INT_MAX;
+
+        $response = (new InertiaResponse('Users/Index', ['value' => $loop], 'v1', 'unused'))
+            ->preserveBigIntegers()
+            ->toResponse(self::inertiaRequest(), service('response', null, false));
+
+        $value = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR)['props']['value'];
+
+        $this->assertSame(['$bigint' => (string) PHP_INT_MAX], $value['id']);
+        $this->assertSame(['self' => null, 'id' => PHP_INT_MAX], $value['self']);
+    }
+
+    private static function inertiaRequest(): IncomingRequest
+    {
+        $config  = config(AppConfig::class);
+        $request = new IncomingRequest($config, new SiteURI($config, 'users'), null, new UserAgent());
+        $request->setHeader('X-Inertia', 'true');
+
+        return $request;
+    }
+
+    public function testABigIntegerInFlashDataIsWrappedUnderFlash(): void
+    {
+        $this->mockSession();
+        $factory = new ResponseFactory($this->makeRequest(), self::SHELL_VIEW, static fn (): string => 'v1');
+        $factory->flash('total', PHP_INT_MAX);
+
+        $page = $this->pageOf($factory->render('Users/Index', [])->preserveBigIntegers());
+
+        $this->assertSame(['total' => ['$bigint' => (string) PHP_INT_MAX]], $page['flash']);
+    }
+
+    public function testThePreserveFlagComesRightAfterTheMetadataAndBeforeClearHistory(): void
+    {
+        $inertia = (new InertiaResponse(
+            'Users/Index',
+            ['stats' => new DeferProp(static fn (): int => 1)],
+            'v1',
+            self::SHELL_VIEW,
+            encryptHistory: true,
+            clearHistory: true,
+        ))->preserveBigIntegers();
+
+        $keys = array_keys($this->pageOf($inertia));
+
+        $this->assertSame(['component', 'props', 'url', 'version', 'deferredProps', 'preserveBigIntegers', 'clearHistory', 'encryptHistory'], $keys);
+    }
+
+    public function testBigIntegersAreSentRawAndTheKeyIsAbsentUnlessAskedFor(): void
+    {
+        $page = $this->pageOf(new InertiaResponse('Users/Index', ['value' => PHP_INT_MAX], 'v1', self::SHELL_VIEW));
+
+        $this->assertSame(PHP_INT_MAX, $page['props']['value']);
+        $this->assertArrayNotHasKey('preserveBigIntegers', $page);
+    }
+
+    public function testTheConstructorFlagOptsAPageIn(): void
+    {
+        $inertia = new InertiaResponse('Users/Index', ['value' => PHP_INT_MAX], 'v1', self::SHELL_VIEW, preserveBigIntegers: true);
+
+        $this->assertSame(['$bigint' => (string) PHP_INT_MAX], $this->pageOf($inertia)['props']['value']);
+    }
+
+    public function testPreserveBigIntegersFalseTurnsAnOptedInPageOff(): void
+    {
+        $inertia = new InertiaResponse('Users/Index', ['value' => PHP_INT_MAX], 'v1', self::SHELL_VIEW, preserveBigIntegers: true);
+        $inertia->preserveBigIntegers(false);
+        $page = $this->pageOf($inertia);
+
+        $this->assertSame(PHP_INT_MAX, $page['props']['value']);
+        $this->assertArrayNotHasKey('preserveBigIntegers', $page);
+    }
+
+    public function testPreserveBigIntegersReturnsTheSameResponse(): void
+    {
+        $inertia = new InertiaResponse('Users/Index', [], 'v1', self::SHELL_VIEW);
+
+        $this->assertSame($inertia, $inertia->preserveBigIntegers());
+        $this->assertSame($inertia, $inertia->preserveBigIntegers(false));
+    }
+}
+
+enum BigIntegerBackedEnum: int
+{
+    case Huge  = 9223372036854775807;
+    case Small = 7;
+}
+
+enum BigIntegerStringEnum: string
+{
+    case Name = 'name';
+}
+
+enum BigIntegerPureEnum
+{
+    case Case;
+}
+
+final class BigIntegerSerializable implements JsonSerializable
+{
+    /**
+     * @return array<string, int>
+     */
+    public function jsonSerialize(): array
+    {
+        return ['id' => PHP_INT_MAX];
     }
 }

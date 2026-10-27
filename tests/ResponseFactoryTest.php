@@ -621,6 +621,61 @@ final class ResponseFactoryTest extends CIUnitTestCase
         }
     }
 
+    public function testBigIntegersAreSentRawByDefault(): void
+    {
+        $this->assertFalse((new InertiaConfig())->preserveBigIntegers);
+
+        $page = $this->renderPageObject(service('inertia', false), 'Users/Index', ['id' => PHP_INT_MAX]);
+
+        $this->assertSame(PHP_INT_MAX, $page['props']['id']);
+        $this->assertArrayNotHasKey('preserveBigIntegers', $page);
+    }
+
+    public function testTheConfiguredBigIntegerOptionWrapsEveryPageThroughTheService(): void
+    {
+        $config                      = config('Inertia');
+        $original                    = $config->preserveBigIntegers;
+        $config->preserveBigIntegers = true;
+
+        try {
+            $page = $this->renderPageObject(service('inertia', false), 'Users/Index', ['id' => PHP_INT_MAX]);
+
+            $this->assertSame(['$bigint' => (string) PHP_INT_MAX], $page['props']['id']);
+            $this->assertTrue($page['preserveBigIntegers']);
+        } finally {
+            $config->preserveBigIntegers = $original;
+        }
+    }
+
+    public function testAResponseOverridesTheConfiguredBigIntegerOption(): void
+    {
+        $config                      = config('Inertia');
+        $original                    = $config->preserveBigIntegers;
+        $config->preserveBigIntegers = true;
+
+        try {
+            $factory = service('inertia', false);
+            $request = $this->makeRequest('users', ['X-Inertia' => 'true']);
+            $off     = $factory->render('Users/Index', ['id' => PHP_INT_MAX])->preserveBigIntegers(false);
+            $page    = json_decode((string) $off->toResponse($request, $this->makeResponse())->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+            $this->assertSame(PHP_INT_MAX, $page['props']['id']);
+            $this->assertArrayNotHasKey('preserveBigIntegers', $page);
+        } finally {
+            $config->preserveBigIntegers = $original;
+        }
+    }
+
+    public function testAResponseOptsInWhenTheConfiguredOptionIsOff(): void
+    {
+        $factory = $this->newFactory();
+        $request = $this->makeRequest('users', ['X-Inertia' => 'true']);
+        $on      = $factory->render('Users/Index', ['id' => PHP_INT_MAX])->preserveBigIntegers();
+        $page    = json_decode((string) $on->toResponse($request, $this->makeResponse())->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame(['$bigint' => (string) PHP_INT_MAX], $page['props']['id']);
+    }
+
     public function testHistoryEncryptionCanBeSwitchedOffForLaterRenders(): void
     {
         $factory = $this->newFactory(null, true);

@@ -30,7 +30,7 @@ final class InertiaTestTraitTest extends CIUnitTestCase
     /**
      * @param array<string, mixed> $props
      */
-    private function inertiaResult(bool $asJson, array $props = ['title' => 'Users', 'users' => [['name' => 'Ada']]]): TestResponse
+    private function inertiaResult(bool $asJson, array $props = ['title' => 'Users', 'users' => [['name' => 'Ada']]], bool $preserveBigIntegers = false): TestResponse
     {
         $config  = config(AppConfig::class);
         $request = new IncomingRequest($config, new SiteURI($config, 'users'), null, new UserAgent());
@@ -39,7 +39,7 @@ final class InertiaTestTraitTest extends CIUnitTestCase
             $request->setHeader('X-Inertia', 'true');
         }
 
-        $response = (new InertiaResponse('Users/Index', $props, 'v1', self::SHELL_VIEW))
+        $response = (new InertiaResponse('Users/Index', $props, 'v1', self::SHELL_VIEW, preserveBigIntegers: $preserveBigIntegers))
             ->toResponse($request, service('response', null, false));
 
         return new TestResponse($response);
@@ -255,6 +255,18 @@ final class InertiaTestTraitTest extends CIUnitTestCase
             $this->assertSame('/users', $page['url']);
             $this->assertSame('v1', $page['version']);
             $this->assertSame('Users', $page['props']['title']);
+        }
+    }
+
+    public function testAnOptedInPageSeesItsBigIntegersAsIntegersThroughTheAssertable(): void
+    {
+        foreach ([true, false] as $asJson) {
+            $result = $this->inertiaResult($asJson, ['id' => PHP_INT_MAX], true);
+
+            $this->assertSame(['$bigint' => (string) PHP_INT_MAX], $this->inertiaPage($result)['props']['id']);
+            $this->assertInertia($result, static function (AssertableInertia $page): void {
+                $page->where('id', PHP_INT_MAX);
+            });
         }
     }
 

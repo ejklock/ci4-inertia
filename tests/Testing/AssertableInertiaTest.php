@@ -452,4 +452,39 @@ final class AssertableInertiaTest extends CIUnitTestCase
 
         $page->hasFlash('toast');
     }
+
+    public function testAnOptedInPageHasItsBigIntegerMarkersDecodedInPropsAndFlash(): void
+    {
+        $page = AssertableInertia::fromPage([
+            ...$this->page(),
+            'props'               => ['title' => 'Users', 'id' => ['$bigint' => '9007199254740993'], 'rows' => [['id' => ['$bigint' => '-9223372036854775808']]]],
+            'flash'               => ['total' => ['$bigint' => (string) PHP_INT_MAX]],
+            'preserveBigIntegers' => true,
+        ]);
+
+        $page->where('id', 9007199254740993)->where('rows.0.id', PHP_INT_MIN)->hasFlash('total', PHP_INT_MAX);
+
+        $this->assertSame(9007199254740993, $page->prop('id'));
+    }
+
+    public function testAMarkerOnAPageWithoutTheFlagIsLeftAsTheArray(): void
+    {
+        $page = AssertableInertia::fromPage([...$this->page(), 'props' => ['id' => ['$bigint' => '5']], 'flash' => ['id' => ['$bigint' => '5']]]);
+
+        $page->where('id', ['$bigint' => '5'])->hasFlash('id', ['$bigint' => '5']);
+
+        $this->assertSame(['$bigint' => '5'], $page->prop('id'));
+    }
+
+    public function testAMarkerWhoseValueIsNotAStringIsLeftAsTheArrayOnAnOptedInPage(): void
+    {
+        $page = AssertableInertia::fromPage([
+            ...$this->page(),
+            'props'               => ['id' => ['$bigint' => 5], 'other' => ['$bigint' => ['x']]],
+            'preserveBigIntegers' => true,
+        ]);
+
+        $this->assertSame(['$bigint' => 5], $page->prop('id'));
+        $this->assertSame(['$bigint' => ['x']], $page->prop('other'));
+    }
 }

@@ -55,24 +55,28 @@ final class ResponseFactory
     private ?Closure $componentTransformer = null;
 
     /**
-     * @param IncomingRequest   $request         The current request; read only by
-     *                                           `location()` to tell an Inertia reload
-     *                                           apart from a first visit.
-     * @param string            $rootView        The root view forwarded to every
-     *                                           `InertiaResponse` this instance builds.
-     * @param Closure(): string $versionResolver Produces the asset version. Invoked at
-     *                                           most once per instance and memoized —
-     *                                           `version()` replaces it and clears the
-     *                                           memo for the next `render()`.
-     * @param bool              $encryptHistory  Whether pages ask the client to encrypt
-     *                                           their history state until `encryptHistory()`
-     *                                           overrides it.
+     * @param IncomingRequest   $request             The current request; read only by
+     *                                               `location()` to tell an Inertia reload
+     *                                               apart from a first visit.
+     * @param string            $rootView            The root view forwarded to every
+     *                                               `InertiaResponse` this instance builds.
+     * @param Closure(): string $versionResolver     Produces the asset version. Invoked at
+     *                                               most once per instance and memoized —
+     *                                               `version()` replaces it and clears the
+     *                                               memo for the next `render()`.
+     * @param bool              $encryptHistory      Whether pages ask the client to encrypt
+     *                                               their history state until `encryptHistory()`
+     *                                               overrides it.
+     * @param bool              $preserveBigIntegers Whether every page sends integers outside JavaScript's
+     *                                               safe range as `{"$bigint": "<digits>"}` markers; a response
+     *                                               overrides it with `preserveBigIntegers()`.
      */
     public function __construct(
         private readonly IncomingRequest $request,
         private string $rootView,
         private Closure $versionResolver,
         private bool $encryptHistory = false,
+        private readonly bool $preserveBigIntegers = false,
     ) {
     }
 
@@ -112,6 +116,7 @@ final class ResponseFactory
             $this->urlResolver,
             $this->pullFlag(SessionKey::PRESERVE_FRAGMENT),
             $this,
+            $this->preserveBigIntegers,
         );
     }
 

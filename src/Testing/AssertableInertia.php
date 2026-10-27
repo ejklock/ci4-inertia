@@ -63,7 +63,38 @@ final readonly class AssertableInertia
             Assert::fail('The Inertia page key [props] is not an array.');
         }
 
+        if (($page['preserveBigIntegers'] ?? false) === true) {
+            $page['props'] = self::decodeBigIntegers($page['props']);
+
+            if (is_array($page['flash'] ?? null)) {
+                $page['flash'] = self::decodeBigIntegers($page['flash']);
+            }
+        }
+
         return new self($page, $reloader);
+    }
+
+    /**
+     * Turns big integer markers back into integers, so assertions are made against the values
+     * the response was given.
+     *
+     * @param array<array-key, mixed> $value
+     *
+     * @return array<array-key, mixed>
+     */
+    private static function decodeBigIntegers(array $value): array
+    {
+        foreach ($value as $key => $nested) {
+            if (! is_array($nested)) {
+                continue;
+            }
+
+            $value[$key] = is_string($nested['$bigint'] ?? null)
+                ? (int) $nested['$bigint']
+                : self::decodeBigIntegers($nested);
+        }
+
+        return $value;
     }
 
     /**

@@ -21,44 +21,49 @@ use UnitEnum;
  */
 final class InertiaResponse
 {
+    use PreservesBigIntegers;
+
     /**
      * @var array<string, mixed>
      */
     private array $viewData = [];
 
     /**
-     * @param string                                  $component        The client-side component name Inertia
-     *                                                                  mounts, e.g. `Users/Index`.
-     * @param array<array-key, mixed>                 $props            The declared props, keyed by name. A value
-     *                                                                  may be a closure or an invokable object, called
-     *                                                                  only when the prop is sent; an `OptionalProp`
-     *                                                                  to leave it out of a full render, a `DeferProp`
-     *                                                                  to leave it out of a full render and have the
-     *                                                                  client fetch it afterwards, a `MergeProp` to
-     *                                                                  have the client combine it with its current
-     *                                                                  value, or an `AlwaysProp` to bypass partial
-     *                                                                  reload filtering; any other value is sent as-is.
-     * @param string                                  $version          The asset version echoed on the page object,
-     *                                                                  compared by the client against the version
-     *                                                                  it booted with to detect stale assets.
-     * @param string                                  $rootView         The root view rendered for a non-Inertia
-     *                                                                  visit.
-     * @param bool                                    $encryptHistory   Whether the page object asks the client to
-     *                                                                  encrypt this page's history state.
-     * @param bool                                    $clearHistory     Whether the page object asks the client to
-     *                                                                  discard its encrypted history by rotating the key.
-     * @param array<array-key, mixed>                 $sharedProps      The shared props, kept apart from the page
-     *                                                                  props so the page can list their top-level keys
-     *                                                                  under `sharedProps`; a page prop with the same
-     *                                                                  key wins.
-     * @param (Closure(IncomingRequest): string)|null $urlResolver      Computes the page object's `url`
-     *                                                                  from the current request; `null` uses the
-     *                                                                  request path and query string.
-     * @param bool                                    $preserveFragment Whether the page object asks the client to keep
-     *                                                                  the URL fragment across a redirect.
-     * @param ResponseFactory|null                    $factory          The factory whose flash data this page carries
-     *                                                                  and flashes into; `null` uses the shared
-     *                                                                  `inertia` service.
+     * @param string                                  $component           The client-side component name Inertia
+     *                                                                     mounts, e.g. `Users/Index`.
+     * @param array<array-key, mixed>                 $props               The declared props, keyed by name. A value
+     *                                                                     may be a closure or an invokable object, called
+     *                                                                     only when the prop is sent; an `OptionalProp`
+     *                                                                     to leave it out of a full render, a `DeferProp`
+     *                                                                     to leave it out of a full render and have the
+     *                                                                     client fetch it afterwards, a `MergeProp` to
+     *                                                                     have the client combine it with its current
+     *                                                                     value, or an `AlwaysProp` to bypass partial
+     *                                                                     reload filtering; any other value is sent as-is.
+     * @param string                                  $version             The asset version echoed on the page object,
+     *                                                                     compared by the client against the version
+     *                                                                     it booted with to detect stale assets.
+     * @param string                                  $rootView            The root view rendered for a non-Inertia
+     *                                                                     visit.
+     * @param bool                                    $encryptHistory      Whether the page object asks the client to
+     *                                                                     encrypt this page's history state.
+     * @param bool                                    $clearHistory        Whether the page object asks the client to
+     *                                                                     discard its encrypted history by rotating the key.
+     * @param array<array-key, mixed>                 $sharedProps         The shared props, kept apart from the page
+     *                                                                     props so the page can list their top-level keys
+     *                                                                     under `sharedProps`; a page prop with the same
+     *                                                                     key wins.
+     * @param (Closure(IncomingRequest): string)|null $urlResolver         Computes the page object's `url`
+     *                                                                     from the current request; `null` uses the
+     *                                                                     request path and query string.
+     * @param bool                                    $preserveFragment    Whether the page object asks the client to keep
+     *                                                                     the URL fragment across a redirect.
+     * @param ResponseFactory|null                    $factory             The factory whose flash data this page carries
+     *                                                                     and flashes into; `null` uses the shared
+     *                                                                     `inertia` service.
+     * @param bool                                    $preserveBigIntegers Whether integers outside JavaScript's safe range
+     *                                                                     are sent as `{"$bigint": "<digits>"}` markers, and
+     *                                                                     the page object says so.
      */
     public function __construct(
         private readonly string $component,
@@ -71,7 +76,21 @@ final class InertiaResponse
         private readonly ?Closure $urlResolver = null,
         private readonly bool $preserveFragment = false,
         private readonly ?ResponseFactory $factory = null,
+        bool $preserveBigIntegers = false,
     ) {
+        $this->preserveBigIntegers = $preserveBigIntegers;
+    }
+
+    /**
+     * Sends integers outside JavaScript's safe range as `{"$bigint": "<digits>"}` markers in
+     * this page's props and flash data, and marks the page with `preserveBigIntegers`, so the
+     * client can revive them without losing precision.
+     */
+    public function preserveBigIntegers(bool $preserve = true): self
+    {
+        $this->preserveBigIntegers = $preserve;
+
+        return $this;
     }
 
     /**
@@ -160,7 +179,7 @@ final class InertiaResponse
      * Assembles the page object: the keys `component`, `props`, `url` and `version`, then the
      * metadata the props resolver collected (`sharedProps`, `mergeProps`, `prependProps`,
      * `deepMergeProps`, `matchPropsOn`, `deferredProps`, `rescuedProps`, `scrollProps`,
-     * `onceProps`) when it is not empty, then `clearHistory`, `encryptHistory`, `flash` and
+     * `onceProps`) when it is not empty, then `preserveBigIntegers` when the page opted in, then `clearHistory`, `encryptHistory`, `flash` and
      * `preserveFragment` when each holds — the shape both `asJson()` and `asHtml()` serialize
      * verbatim.
      *
@@ -172,11 +191,15 @@ final class InertiaResponse
 
         $page = [
             'component' => $this->component,
-            'props'     => $props,
+            'props'     => $this->encodeBigIntegersWhenEnabled($props),
             'url'       => $this->currentUrl($request),
             'version'   => $this->version,
             ...$metadata,
         ];
+
+        if ($this->preserveBigIntegers) {
+            $page['preserveBigIntegers'] = true;
+        }
 
         if ($this->clearHistory) {
             $page['clearHistory'] = true;
@@ -189,7 +212,7 @@ final class InertiaResponse
         $flash = $this->flashSource()->pullFlashed();
 
         if ($flash !== []) {
-            $page['flash'] = $flash;
+            $page['flash'] = $this->encodeBigIntegersWhenEnabled($flash);
         }
 
         if ($this->preserveFragment) {
