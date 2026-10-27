@@ -11,6 +11,7 @@ use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\RedirectResponse;
 use CodeIgniter\HTTP\ResponseInterface;
 use Ejklock\Ci4Inertia\Support\Header;
+use Ejklock\Ci4Inertia\Support\SessionKey;
 use InvalidArgumentException;
 use UnitEnum;
 
@@ -22,22 +23,18 @@ use UnitEnum;
  * render on this instance, `version()` and `getVersion()` to override and read how the asset
  * version is resolved, `setRootView()`, `resolveUrlUsing()` and `transformComponentUsing()` to
  * change the root view, the page URL and the component name of the renders that follow, and
- * `location()` to answer a stale-asset reload. A prop value is a scalar, an array, `null`, a closure or invokable object called only
+ * `location()` to answer a stale-asset reload, `flash()`, `getFlashed()` and `pullFlashed()` for
+ * one-time data the next page carries, `preserveFragment()` to keep the URL fragment across a
+ * redirect and `back()` to redirect to the previous location. A prop value is a scalar, an array, `null`, a closure or invokable object called only
  * when the prop is sent, a `JsonSerializable` object, or one of the prop classes; any other
  * object is encoded as JSON by the response.
  */
 final class ResponseFactory
 {
     /**
-     * Session key holding a pending history clear until the next render pulls it.
+     * CodeIgniter's own session key for the last page URL, the one `back()` falls back to.
      */
-    private const CLEAR_HISTORY_SESSION_KEY = 'inertia.clear_history';
-
-    /**
-     * Whether this request already wrote the session, so a render may read it back even
-     * though the request carries no session cookie yet.
-     */
-    private bool $sessionTouched = false;
+    private const PREVIOUS_URL_SESSION_KEY = '_ci_previous_url';
 
     /**
      * @var array<array-key, mixed>
@@ -110,9 +107,11 @@ final class ResponseFactory
             $this->getVersion(),
             $this->rootView,
             $this->encryptHistory,
-            $this->pullClearHistory(),
+            $this->pullFlag(SessionKey::CLEAR_HISTORY),
             $this->sharedProps,
             $this->urlResolver,
+            $this->pullFlag(SessionKey::PRESERVE_FRAGMENT),
+            $this,
         );
     }
 
@@ -185,9 +184,109 @@ final class ResponseFactory
      */
     public function clearHistory(): void
     {
-        session()->set(self::CLEAR_HISTORY_SESSION_KEY, true);
+        $this->setFlag(SessionKey::CLEAR_HISTORY);
+    }
 
-        $this->sessionTouched = true;
+    /**
+     * Asks the client to keep the URL fragment once: the next render, in this request or after
+     * a redirect, carries `preserveFragment` and the request that sent it consumes the flag.
+     */
+    public function preserveFragment(): void
+    {
+        $this->setFlag(SessionKey::PRESERVE_FRAGMENT);
+    }
+
+    /**
+     * Stores data the next page carries under `flash` and the client does not keep in its history
+     * state, such as a toast: it survives a redirect and is dropped once a page has carried it.
+     * New data is merged over what is already flashed, so a repeated key takes the latest value.
+     *
+     * @param array<string, mixed>|BackedEnum|string|UnitEnum $key   A flash key, a string-backed enum read
+     *                                                               by its value, a pure enum read by its
+     *                                                               name, or a map of keys to values.
+     * @param mixed                                           $value The value when `$key` is a single key;
+     *                                                               ignored for a map.
+     */
+    public function flash(array|BackedEnum|string|UnitEnum $key, mixed $value = null): ResponseFactory
+    {
+        if (! is_array($key)) {
+            $key = [match (true) {
+                $key instanceof BackedEnum => $key->value,
+                $key instanceof UnitEnum   => $key->name,
+                default                    => $key,
+            } => $value];
+        }
+
+        session()->setFlashdata(SessionKey::FLASH_DATA, [...$this->getFlashed(), ...$key]);
+
+        return $this;
+    }
+
+    /**
+     * Reads the flash data without removing it; empty when the request carries no session, which
+     * is then not started.
+     *
+     * @return array<string, mixed>
+     */
+    public function getFlashed(): array
+    {
+        if (! $this->hasSession() || ! session()->has(SessionKey::FLASH_DATA)) {
+            return [];
+        }
+
+        $flashed = session()->getFlashdata(SessionKey::FLASH_DATA);
+
+        return is_array($flashed) ? $flashed : [];
+    }
+
+    /**
+     * Reads the flash data and removes it, so no later page carries it; empty when the request
+     * carries no session, which is then not started.
+     *
+     * @return array<string, mixed>
+     */
+    public function pullFlashed(): array
+    {
+        $flashed = $this->getFlashed();
+
+        if ($flashed !== []) {
+            $session = session();
+            $session->remove(SessionKey::FLASH_DATA);
+            $session->unmarkFlashdata(SessionKey::FLASH_DATA);
+        }
+
+        return $flashed;
+    }
+
+    /**
+     * Answers a redirect to the previous location: the `Referer` header, else the URL CodeIgniter
+     * stored for the last page when the request carries a session, else `$fallback`, else the site
+     * root. The session is not started to look for the stored URL.
+     *
+     * @param array<string, string> $headers  Headers set on the redirect.
+     * @param false|string          $fallback Where to go when no previous location is known; `false`
+     *                                        stands for the site root.
+     */
+    public function back(int $status = 302, array $headers = [], false|string $fallback = false): RedirectResponse
+    {
+        $url = $this->request->getHeaderLine('Referer');
+
+        if ($url === '' && $this->hasSession()) {
+            $stored = session()->get(self::PREVIOUS_URL_SESSION_KEY);
+            $url    = is_string($stored) ? $stored : '';
+        }
+
+        if ($url === '') {
+            $url = $fallback === false ? '/' : $fallback;
+        }
+
+        $response = redirect()->to($url, $status);
+
+        foreach ($headers as $name => $value) {
+            $response->setHeader($name, $value);
+        }
+
+        return $response;
     }
 
     /**
@@ -328,25 +427,42 @@ final class ResponseFactory
     }
 
     /**
-     * Reads and removes the pending history clear. The session is consulted only when this
-     * request wrote it or carries the session cookie, so a first visit with no cookie never
-     * starts a session just to look for the flag.
+     * Records in the session that a one-time flag is pending for the next render.
      */
-    private function pullClearHistory(): bool
+    private function setFlag(string $key): void
     {
-        if (! $this->sessionTouched && $this->request->getCookie(config('Session')->cookieName) === null) {
+        session()->set($key, true);
+    }
+
+    /**
+     * Reads and removes a pending one-time flag.
+     */
+    private function pullFlag(string $key): bool
+    {
+        if (! $this->hasSession()) {
             return false;
         }
 
         $session = session();
 
-        if (! $session->has(self::CLEAR_HISTORY_SESSION_KEY)) {
+        if (! $session->has($key)) {
             return false;
         }
 
-        $session->remove(self::CLEAR_HISTORY_SESSION_KEY);
+        $session->remove($key);
 
         return true;
+    }
+
+    /**
+     * Whether the session may be read: it is already started (a write starts it), or the request
+     * carries the session cookie. A first visit with neither never starts a session just to
+     * look for state in it.
+     */
+    private function hasSession(): bool
+    {
+        return isset($_SESSION)
+            || $this->request->getCookie(config('Session')->cookieName) !== null;
     }
 
     /**

@@ -364,4 +364,92 @@ final class AssertableInertiaTest extends CIUnitTestCase
 
         $this->assertable()->loadDeferredProps(static fn (AssertableInertia $page): null => null);
     }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function pageWithFlash(): array
+    {
+        return [...$this->page(), 'flash' => ['toast' => 'Saved', 'a' => ['b' => null], 'zero' => 0]];
+    }
+
+    public function testHasFlashPassesForAPresentKeyAValueAndADotPath(): void
+    {
+        $page = AssertableInertia::fromPage($this->pageWithFlash());
+
+        $this->assertSame($page, $page->hasFlash('toast')->hasFlash('toast', 'Saved')->hasFlash('a.b')->hasFlash('a.b', null)->hasFlash('zero', 0));
+    }
+
+    public function testHasFlashFailsForAMissingKey(): void
+    {
+        $this->expectFailure('Inertia Flash Data is missing key [x].');
+
+        AssertableInertia::fromPage($this->pageWithFlash())->hasFlash('x');
+    }
+
+    public function testHasFlashFailsForAWrongValue(): void
+    {
+        $this->expectFailure('Inertia Flash Data [toast] does not match expected value.');
+
+        AssertableInertia::fromPage($this->pageWithFlash())->hasFlash('toast', 'Other');
+    }
+
+    public function testHasFlashComparesStrictly(): void
+    {
+        $this->expectFailure('Inertia Flash Data [zero] does not match expected value.');
+
+        AssertableInertia::fromPage($this->pageWithFlash())->hasFlash('zero', '0');
+    }
+
+    public function testMissingFlashPassesWhenAbsentAndFailsWhenPresent(): void
+    {
+        $page = AssertableInertia::fromPage($this->pageWithFlash());
+
+        $this->assertSame($page, $page->missingFlash('x')->missingFlash('a.c'));
+
+        $this->expectFailure('Inertia Flash Data has unexpected key [toast].');
+
+        $page->missingFlash('toast');
+    }
+
+    public function testFlashAssertionsTryTheLiteralDottedKeyBeforeTheDotPath(): void
+    {
+        $page = AssertableInertia::fromPage([...$this->page(), 'flash' => ['form.saved' => true]]);
+
+        $this->assertSame($page, $page->hasFlash('form.saved', true));
+
+        $this->expectFailure('Inertia Flash Data has unexpected key [form.saved].');
+
+        $page->missingFlash('form.saved');
+    }
+
+    public function testPropAssertionsTryTheLiteralDottedKeyBeforeTheDotPath(): void
+    {
+        $page = $this->page();
+
+        $page['props']['a.b'] = 'literal';
+        $page['props']['a']   = ['b' => 'nested'];
+
+        $assertable = AssertableInertia::fromPage($page);
+
+        $this->assertSame($assertable, $assertable->where('a.b', 'literal'));
+    }
+
+    public function testMissingFlashFailsForAPresentKeyWhoseValueIsNull(): void
+    {
+        $this->expectFailure('Inertia Flash Data has unexpected key [a.b].');
+
+        AssertableInertia::fromPage($this->pageWithFlash())->missingFlash('a.b');
+    }
+
+    public function testAPageWithoutFlashHasEmptyFlashData(): void
+    {
+        $page = $this->assertable();
+
+        $this->assertSame($page, $page->missingFlash('toast'));
+
+        $this->expectFailure('Inertia Flash Data is missing key [toast].');
+
+        $page->hasFlash('toast');
+    }
 }

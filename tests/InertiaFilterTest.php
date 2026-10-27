@@ -220,6 +220,141 @@ final class InertiaFilterTest extends CIUnitTestCase
         $this->assertSame('new', $_SESSION['__ci_vars']['errors']);
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    private function sessionWithInertiaFlashData(): array
+    {
+        return [
+            'inertia.flash_data' => ['toast' => 'Saved'],
+            '__ci_vars'          => ['inertia.flash_data' => 'old'],
+        ];
+    }
+
+    /**
+     * @param array<string, string> $headers
+     */
+    #[DataProvider('provideARedirectFlashesTheInertiaFlashDataAgainSoItSurvivesOneMoreRequest')]
+    public function testARedirectFlashesTheInertiaFlashDataAgainSoItSurvivesOneMoreRequest(array $headers): void
+    {
+        $this->withRoutes([
+            ['POST', 'page', static fn () => redirect()->to('/other'), ['filter' => 'inertia']],
+        ]);
+
+        $result = $this->withSession($this->sessionWithInertiaFlashData())->withHeaders($headers)->post('page');
+
+        $result->assertRedirect();
+        $this->assertSame(['toast' => 'Saved'], $_SESSION['inertia.flash_data']);
+        $this->assertSame('new', $_SESSION['__ci_vars']['inertia.flash_data']);
+    }
+
+    /**
+     * @return iterable<string, array{0: array<string, string>}>
+     */
+    public static function provideARedirectFlashesTheInertiaFlashDataAgainSoItSurvivesOneMoreRequest(): iterable
+    {
+        yield 'inertia request' => [['X-Inertia' => 'true']];
+
+        yield 'plain request' => [[]];
+    }
+
+    public function testFlashSetBeforeARedirectReachesTheNextPageOfARequestCarryingTheSessionWithoutACookie(): void
+    {
+        $this->withRoutes([
+            ['POST', 'save', static function () {
+                service('inertia')->flash('toast', 'Saved');
+
+                return redirect()->to('/page');
+            }, ['filter' => 'inertia']],
+            $this->renderingRoute(),
+        ]);
+
+        $this->withSession([])->withHeaders(['X-Inertia' => 'true'])->post('save');
+        $carried = $_SESSION;
+        $this->resetPerRequestServices();
+        $this->withRoutes([$this->renderingRoute()]);
+
+        $result = $this->withSession($carried)
+            ->withHeaders(['X-Inertia' => 'true', 'X-Inertia-Version' => self::CURRENT_VERSION])
+            ->get('/page');
+
+        $this->assertSame(['toast' => 'Saved'], json_decode($result->getJSON(), true)['flash']);
+    }
+
+    public function testPreserveFragmentSetBeforeARedirectReachesTheNextPageOfARequestCarryingTheSessionWithoutACookie(): void
+    {
+        $this->withRoutes([
+            ['POST', 'save', static function () {
+                service('inertia')->preserveFragment();
+
+                return redirect()->to('/page');
+            }, ['filter' => 'inertia']],
+            $this->renderingRoute(),
+        ]);
+
+        $this->withSession([])->withHeaders(['X-Inertia' => 'true'])->post('save');
+        $carried = $_SESSION;
+        $this->resetPerRequestServices();
+        $this->withRoutes([$this->renderingRoute()]);
+
+        $result = $this->withSession($carried)
+            ->withHeaders(['X-Inertia' => 'true', 'X-Inertia-Version' => self::CURRENT_VERSION])
+            ->get('/page');
+
+        $this->assertTrue(json_decode($result->getJSON(), true)['preserveFragment']);
+    }
+
+    public function testARedirectWithoutInertiaFlashDataWritesNothing(): void
+    {
+        $this->withRoutes([
+            ['POST', 'page', static fn () => redirect()->to('/other'), ['filter' => 'inertia']],
+        ]);
+
+        $this->withSession(['other' => 'kept'])->withHeaders(['X-Inertia' => 'true'])->post('page');
+
+        $this->assertArrayNotHasKey('inertia.flash_data', $_SESSION ?? []);
+        $this->assertArrayNotHasKey('__ci_vars', $_SESSION ?? []);
+    }
+
+    public function testARedirectWithEmptyInertiaFlashDataFlashesNothingAgain(): void
+    {
+        $this->withRoutes([
+            ['POST', 'page', static fn () => redirect()->to('/other'), ['filter' => 'inertia']],
+        ]);
+
+        $session = ['inertia.flash_data' => [], '__ci_vars' => ['inertia.flash_data' => 'old']];
+
+        $this->withSession($session)->withHeaders(['X-Inertia' => 'true'])->post('page');
+
+        $this->assertSame('old', $_SESSION['__ci_vars']['inertia.flash_data']);
+    }
+
+    public function testAResponseThatIsNotARedirectLeavesTheInertiaFlashDataAlone(): void
+    {
+        $this->withRoutes([['GET', 'plain', static fn () => service('response')->setBody('ok'), ['filter' => 'inertia']]]);
+
+        $this->withSession($this->sessionWithInertiaFlashData())
+            ->withHeaders(['X-Inertia' => 'true', 'X-Inertia-Version' => self::CURRENT_VERSION])
+            ->get('/plain');
+
+        $this->assertSame('old', $_SESSION['__ci_vars']['inertia.flash_data']);
+    }
+
+    public function testARedirectForARequestWithoutASessionStartsNone(): void
+    {
+        unset($_SESSION);
+        BaseService::resetSingle('session');
+        BaseService::resetSingle('request');
+
+        $request  = service('request')->setHeader('X-Inertia', 'true');
+        $response = service('response')->setStatusCode(302)->setHeader('Location', '/other');
+
+        (new InertiaFilter())->after($request, $response);
+
+        $this->assertFalse(BaseService::has('session'), 'The session service was constructed.');
+        $this->assertFalse(isset($_SESSION));
+    }
+
     #[DataProvider('provideDestructiveMethodRedirectIsConvertedFrom302To303')]
     public function testInertiaDestructiveMethodRedirectIsConvertedFrom302To303(string $method): void
     {

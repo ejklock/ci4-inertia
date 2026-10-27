@@ -12,8 +12,9 @@ use PHPUnit\Framework\Assert;
  * Fluent assertions over a decoded Inertia page object: component, url and version, plus
  * dot-path assertions over props (`users.0.name`, a numeric segment indexes a list).
  *
- * Paths are walked with `array_key_exists`, so a prop whose value is `null` counts as
- * present. Keys of the page beyond the required four are kept and readable through `page()`.
+ * A path names a literal key when one exists (`form.saved`), else it is walked segment by segment,
+ * both with `array_key_exists`, so a prop whose value is `null` counts as present.
+ * Keys of the page beyond the required four are kept and readable through `page()`.
  *
  * A page built by `InertiaTestTrait` also carries a request handle, so `reload()`,
  * `reloadOnly()`, `reloadExcept()` and `loadDeferredProps()` can follow the page with a partial
@@ -320,11 +321,91 @@ final readonly class AssertableInertia
     }
 
     /**
+     * Asserts the page's flash data holds the key (a dot path reaches a nested value) and, when
+     * an expected value is given, holds it strictly. A page without `flash` has empty flash data.
+     */
+    public function hasFlash(string $key, mixed $expected = null): static
+    {
+        if (func_num_args() > 1) {
+            self::assertFlashHas($this->flashData(), $key, $expected);
+        } else {
+            self::assertFlashHas($this->flashData(), $key);
+        }
+
+        return $this;
+    }
+
+    /**
+     * Asserts the page's flash data does not hold the key.
+     */
+    public function missingFlash(string $key): static
+    {
+        self::assertFlashMissing($this->flashData(), $key);
+
+        return $this;
+    }
+
+    /**
+     * Asserts flash data holds the key and, when an expected value is given, holds it strictly.
+     * Shared with the test trait, which reads the flash data from the session.
+     *
+     * @param array<array-key, mixed> $flash
+     */
+    public static function assertFlashHas(array $flash, string $key, mixed $expected = null): void
+    {
+        [$found, $actual] = self::walk($flash, $key);
+
+        if (! $found) {
+            Assert::fail(sprintf('Inertia Flash Data is missing key [%s].', $key));
+        }
+
+        if (func_num_args() > 2) {
+            Assert::assertSame($expected, $actual, sprintf('Inertia Flash Data [%s] does not match expected value.', $key));
+        }
+    }
+
+    /**
+     * Asserts flash data does not hold the key.
+     *
+     * @param array<array-key, mixed> $flash
+     */
+    public static function assertFlashMissing(array $flash, string $key): void
+    {
+        if (self::walk($flash, $key)[0]) {
+            Assert::fail(sprintf('Inertia Flash Data has unexpected key [%s].', $key));
+        }
+    }
+
+    /**
+     * @return array<array-key, mixed>
+     */
+    private function flashData(): array
+    {
+        $flash = $this->page['flash'] ?? [];
+
+        return is_array($flash) ? $flash : [];
+    }
+
+    /**
      * @return array{0: bool, 1: mixed} whether the path exists, and its value when it does
      */
     private function resolve(string $path): array
     {
-        $current = $this->page['props'];
+        return self::walk($this->page['props'], $path);
+    }
+
+    /**
+     * @param array<array-key, mixed> $data
+     *
+     * @return array{0: bool, 1: mixed} whether the path exists in `$data`, and its value when it does
+     */
+    private static function walk(array $data, string $path): array
+    {
+        if (array_key_exists($path, $data)) {
+            return [true, $data[$path]];
+        }
+
+        $current = $data;
 
         foreach (explode('.', $path) as $segment) {
             if (! is_array($current) || ! array_key_exists($segment, $current)) {

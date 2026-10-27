@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 namespace Ejklock\Ci4Inertia;
 
+use BackedEnum;
 use Closure;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\ResponseInterface;
+use Ejklock\Ci4Inertia\Config\Services;
 use Ejklock\Ci4Inertia\Support\Header;
+use UnitEnum;
 
 /**
  * Produces the Inertia page object for one render and picks the wire
@@ -24,33 +27,38 @@ final class InertiaResponse
     private array $viewData = [];
 
     /**
-     * @param string                                  $component      The client-side component name Inertia
-     *                                                                mounts, e.g. `Users/Index`.
-     * @param array<array-key, mixed>                 $props          The declared props, keyed by name. A value
-     *                                                                may be a closure or an invokable object, called
-     *                                                                only when the prop is sent; an `OptionalProp`
-     *                                                                to leave it out of a full render, a `DeferProp`
-     *                                                                to leave it out of a full render and have the
-     *                                                                client fetch it afterwards, a `MergeProp` to
-     *                                                                have the client combine it with its current
-     *                                                                value, or an `AlwaysProp` to bypass partial
-     *                                                                reload filtering; any other value is sent as-is.
-     * @param string                                  $version        The asset version echoed on the page object,
-     *                                                                compared by the client against the version
-     *                                                                it booted with to detect stale assets.
-     * @param string                                  $rootView       The root view rendered for a non-Inertia
-     *                                                                visit.
-     * @param bool                                    $encryptHistory Whether the page object asks the client to
-     *                                                                encrypt this page's history state.
-     * @param bool                                    $clearHistory   Whether the page object asks the client to
-     *                                                                discard its encrypted history by rotating the key.
-     * @param array<array-key, mixed>                 $sharedProps    The shared props, kept apart from the page
-     *                                                                props so the page can list their top-level keys
-     *                                                                under `sharedProps`; a page prop with the same
-     *                                                                key wins.
-     * @param (Closure(IncomingRequest): string)|null $urlResolver    Computes the page object's `url`
-     *                                                                from the current request; `null` uses the
-     *                                                                request path and query string.
+     * @param string                                  $component        The client-side component name Inertia
+     *                                                                  mounts, e.g. `Users/Index`.
+     * @param array<array-key, mixed>                 $props            The declared props, keyed by name. A value
+     *                                                                  may be a closure or an invokable object, called
+     *                                                                  only when the prop is sent; an `OptionalProp`
+     *                                                                  to leave it out of a full render, a `DeferProp`
+     *                                                                  to leave it out of a full render and have the
+     *                                                                  client fetch it afterwards, a `MergeProp` to
+     *                                                                  have the client combine it with its current
+     *                                                                  value, or an `AlwaysProp` to bypass partial
+     *                                                                  reload filtering; any other value is sent as-is.
+     * @param string                                  $version          The asset version echoed on the page object,
+     *                                                                  compared by the client against the version
+     *                                                                  it booted with to detect stale assets.
+     * @param string                                  $rootView         The root view rendered for a non-Inertia
+     *                                                                  visit.
+     * @param bool                                    $encryptHistory   Whether the page object asks the client to
+     *                                                                  encrypt this page's history state.
+     * @param bool                                    $clearHistory     Whether the page object asks the client to
+     *                                                                  discard its encrypted history by rotating the key.
+     * @param array<array-key, mixed>                 $sharedProps      The shared props, kept apart from the page
+     *                                                                  props so the page can list their top-level keys
+     *                                                                  under `sharedProps`; a page prop with the same
+     *                                                                  key wins.
+     * @param (Closure(IncomingRequest): string)|null $urlResolver      Computes the page object's `url`
+     *                                                                  from the current request; `null` uses the
+     *                                                                  request path and query string.
+     * @param bool                                    $preserveFragment Whether the page object asks the client to keep
+     *                                                                  the URL fragment across a redirect.
+     * @param ResponseFactory|null                    $factory          The factory whose flash data this page carries
+     *                                                                  and flashes into; `null` uses the shared
+     *                                                                  `inertia` service.
      */
     public function __construct(
         private readonly string $component,
@@ -61,7 +69,22 @@ final class InertiaResponse
         private readonly bool $clearHistory = false,
         private readonly array $sharedProps = [],
         private readonly ?Closure $urlResolver = null,
+        private readonly bool $preserveFragment = false,
+        private readonly ?ResponseFactory $factory = null,
     ) {
+    }
+
+    /**
+     * Flashes data for this page, as `ResponseFactory::flash()` does: the page built by
+     * `toResponse()` carries it under `flash`, and no later page does.
+     *
+     * @param array<string, mixed>|BackedEnum|string|UnitEnum $key
+     */
+    public function flash(array|BackedEnum|string|UnitEnum $key, mixed $value = null): self
+    {
+        $this->flashSource()->flash($key, $value);
+
+        return $this;
     }
 
     /**
@@ -136,8 +159,9 @@ final class InertiaResponse
     /**
      * Assembles the page object: the keys `component`, `props`, `url` and `version`, then the
      * metadata the props resolver collected (`sharedProps`, `mergeProps`, `prependProps`,
-     * `deepMergeProps`, `matchPropsOn`, `deferredProps`) when it is not empty, then `encryptHistory` and
-     * `clearHistory` when each holds — the shape both `asJson()` and `asHtml()` serialize verbatim.
+     * `deepMergeProps`, `matchPropsOn`, `deferredProps`) when it is not empty, then `clearHistory`,
+     * `encryptHistory`, `flash` and `preserveFragment` when each holds — the shape both `asJson()`
+     * and `asHtml()` serialize verbatim.
      *
      * @return array<string, mixed>
      */
@@ -153,15 +177,34 @@ final class InertiaResponse
             ...$metadata,
         ];
 
-        if ($this->encryptHistory) {
-            $page['encryptHistory'] = true;
-        }
-
         if ($this->clearHistory) {
             $page['clearHistory'] = true;
         }
 
+        if ($this->encryptHistory) {
+            $page['encryptHistory'] = true;
+        }
+
+        $flash = $this->flashSource()->pullFlashed();
+
+        if ($flash !== []) {
+            $page['flash'] = $flash;
+        }
+
+        if ($this->preserveFragment) {
+            $page['preserveFragment'] = true;
+        }
+
         return $page;
+    }
+
+    /**
+     * The factory whose flash data this page reads: the one that built it, else the shared
+     * `inertia` service.
+     */
+    private function flashSource(): ResponseFactory
+    {
+        return $this->factory ?? Services::inertia();
     }
 
     private function isInertiaRequest(IncomingRequest $request): bool

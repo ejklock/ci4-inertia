@@ -11,6 +11,7 @@ use DOMDocument;
 use DOMElement;
 use DOMXPath;
 use Ejklock\Ci4Inertia\Support\Header;
+use Ejklock\Ci4Inertia\Support\SessionKey;
 use JsonException;
 use PHPUnit\Framework\Assert;
 
@@ -74,6 +75,39 @@ trait InertiaTestTrait
         $page = AssertableInertia::fromPage($this->inertiaPage($result));
 
         return $key === null ? $page->page()['props'] : $page->prop($key);
+    }
+
+    /**
+     * Asserts the Inertia flash data the session holds after a request that redirected has the
+     * key (a dot path reaches a nested value) and, when an expected value is given, holds it
+     * strictly. The session is read as it is, never started.
+     */
+    protected function assertInertiaFlash(TestResponse $result, string $key, mixed $expected = null): void
+    {
+        if (func_num_args() > 2) {
+            AssertableInertia::assertFlashHas($this->inertiaSessionFlash(), $key, $expected);
+        } else {
+            AssertableInertia::assertFlashHas($this->inertiaSessionFlash(), $key);
+        }
+    }
+
+    /**
+     * Asserts the Inertia flash data the session holds after a request that redirected does not
+     * have the key.
+     */
+    protected function assertInertiaFlashMissing(TestResponse $result, string $key): void
+    {
+        AssertableInertia::assertFlashMissing($this->inertiaSessionFlash(), $key);
+    }
+
+    /**
+     * @return array<array-key, mixed>
+     */
+    private function inertiaSessionFlash(): array
+    {
+        $flash = $_SESSION[SessionKey::FLASH_DATA] ?? [];
+
+        return is_array($flash) ? $flash : [];
     }
 
     /**

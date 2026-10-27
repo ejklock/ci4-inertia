@@ -320,4 +320,59 @@ final class InertiaTestTraitTest extends CIUnitTestCase
 
         $this->assertInertia($this->inertiaResult(true))->reload();
     }
+
+    public function testAssertInertiaFlashReadsTheSessionFlashDataAfterARequest(): void
+    {
+        $_SESSION['inertia.flash_data'] = ['toast' => 'Saved', 'a' => ['b' => 1]];
+
+        try {
+            $this->assertInertiaFlash($this->inertiaResult(false), 'toast');
+            $this->assertInertiaFlash($this->inertiaResult(false), 'toast', 'Saved');
+            $this->assertInertiaFlash($this->inertiaResult(false), 'a.b', 1);
+            $this->assertInertiaFlashMissing($this->inertiaResult(false), 'nope');
+        } finally {
+            unset($_SESSION['inertia.flash_data']);
+        }
+    }
+
+    public function testAssertInertiaFlashFailsForAMissingKeyAndAWrongValue(): void
+    {
+        $_SESSION['inertia.flash_data'] = ['toast' => 'Saved'];
+
+        try {
+            try {
+                $this->assertInertiaFlash($this->inertiaResult(false), 'x');
+                $this->fail('the missing key should have failed');
+            } catch (AssertionFailedError $e) {
+                $this->assertStringContainsString('Inertia Flash Data is missing key [x].', $e->getMessage());
+            }
+
+            try {
+                $this->assertInertiaFlash($this->inertiaResult(false), 'toast', 'Other');
+                $this->fail('the wrong value should have failed');
+            } catch (AssertionFailedError $e) {
+                $this->assertStringContainsString('Inertia Flash Data [toast] does not match expected value.', $e->getMessage());
+            }
+
+            try {
+                $this->assertInertiaFlashMissing($this->inertiaResult(false), 'toast');
+                $this->fail('the present key should have failed');
+            } catch (AssertionFailedError $e) {
+                $this->assertStringContainsString('Inertia Flash Data has unexpected key [toast].', $e->getMessage());
+            }
+        } finally {
+            unset($_SESSION['inertia.flash_data']);
+        }
+    }
+
+    public function testAssertInertiaFlashWithoutSessionFlashDataSeesNone(): void
+    {
+        unset($_SESSION['inertia.flash_data']);
+
+        $this->assertInertiaFlashMissing($this->inertiaResult(false), 'toast');
+
+        $this->expectException(AssertionFailedError::class);
+
+        $this->assertInertiaFlash($this->inertiaResult(false), 'toast');
+    }
 }

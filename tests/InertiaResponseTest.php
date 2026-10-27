@@ -19,6 +19,7 @@ use Ejklock\Ci4Inertia\MergeProp;
 use Ejklock\Ci4Inertia\OptionalProp;
 use Ejklock\Ci4Inertia\ProvidesInertiaProperties;
 use Ejklock\Ci4Inertia\RenderContext;
+use Ejklock\Ci4Inertia\ResponseFactory;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
 
@@ -766,6 +767,30 @@ final class InertiaResponseTest extends CIUnitTestCase
         $this->assertArrayHasKey('matchPropsOn', $sent);
         $this->assertTrue($sent['encryptHistory']);
         $this->assertTrue($sent['clearHistory']);
+    }
+
+    public function testThePreserveFragmentFlagAndTheFlashDataShowInBothWireForms(): void
+    {
+        $this->mockSession();
+        $factory = new ResponseFactory($this->makeRequest(), self::SHELL_VIEW, static fn (): string => 'v1');
+        $factory->preserveFragment();
+        $factory->flash('toast', 'Saved');
+
+        $build = static fn (): InertiaResponse => $factory->render('Users/Index', ['a' => 1])->flash('extra', true);
+
+        $html = (string) $build()->toResponse($this->makeRequest('users'), $this->makeResponse())->getBody();
+
+        $this->assertSame(['toast' => 'Saved', 'extra' => true], $this->decodePageScript($html)['flash']);
+        $this->assertTrue($this->decodePageScript($html)['preserveFragment']);
+    }
+
+    public function testAPageBuiltWithoutTheFlagsCarriesNeitherKey(): void
+    {
+        $page = $this->decodePageScript((string) (new InertiaResponse('Users/Index', [], 'v1', self::SHELL_VIEW))
+            ->toResponse($this->makeRequest('users'), $this->makeResponse())->getBody());
+
+        $this->assertArrayNotHasKey('flash', $page);
+        $this->assertArrayNotHasKey('preserveFragment', $page);
     }
 
     public function testTheFirstVisitMountElementCarriesNoDataPageAttribute(): void

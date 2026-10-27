@@ -207,6 +207,45 @@ final class InertiaTest extends CIUnitTestCase
         $this->assertTrue($page['clearHistory']);
     }
 
+    public function testFlashPreserveFragmentAndTheFlashReadersReachTheFactory(): void
+    {
+        $this->mockSession();
+        $factory = $this->injectFactory();
+
+        $this->assertSame($factory, Inertia::flash('toast', 'Saved'));
+        $this->assertSame(['toast' => 'Saved'], Inertia::getFlashed());
+
+        Inertia::preserveFragment();
+        $page = $this->pageOf(Inertia::render('C'));
+
+        $this->assertSame(['toast' => 'Saved'], $page['flash']);
+        $this->assertTrue($page['preserveFragment']);
+        $this->assertSame([], Inertia::pullFlashed());
+    }
+
+    public function testResponseFlashReachesThePageThroughTheFacade(): void
+    {
+        $this->mockSession();
+        $this->injectFactory();
+
+        $response = Inertia::render('C');
+
+        $this->assertSame($response, $response->flash(['k' => 'v']));
+        $this->assertSame(['k' => 'v'], $this->pageOf($response)['flash']);
+    }
+
+    public function testBackRedirectsThroughTheFacade(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(['Referer' => 'https://example.com/a']), 'app', static fn (): string => 'v1');
+        Services::injectMock('inertia', $factory);
+
+        $response = Inertia::back(303, ['X-A' => '1'], '/home');
+
+        $this->assertSame(303, $response->getStatusCode());
+        $this->assertSame('https://example.com/a', $response->getHeaderLine('Location'));
+        $this->assertSame('1', $response->getHeaderLine('X-A'));
+    }
+
     public function testCallsReachTheFactoryInjectedAfterAReset(): void
     {
         $this->injectFactory(version: 'first');

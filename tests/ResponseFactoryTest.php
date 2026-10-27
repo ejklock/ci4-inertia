@@ -6,6 +6,7 @@ namespace Ejklock\Ci4Inertia\Tests;
 
 use ArrayObject;
 use BackedEnum;
+use CodeIgniter\Config\BaseService;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\ResponseInterface;
 use CodeIgniter\HTTP\SiteURI;
@@ -17,8 +18,10 @@ use Ejklock\Ci4Inertia\Config\Inertia as InertiaConfig;
 use Ejklock\Ci4Inertia\ProvidesInertiaProperties;
 use Ejklock\Ci4Inertia\RenderContext;
 use Ejklock\Ci4Inertia\ResponseFactory;
+use Ejklock\Ci4Inertia\Support\SessionKey;
 use InvalidArgumentException;
 use PHPUnit\Framework\Assert;
+use ReflectionClass;
 use RuntimeException;
 use stdClass;
 use UnitEnum;
@@ -603,7 +606,90 @@ final class ResponseFactoryTest extends CIUnitTestCase
         $this->assertSame([], $_SESSION);
     }
 
-    public function testHistoryClearingIsIgnoredWithoutTheSessionCookie(): void
+    /**
+     * Injects a session holding pending data independently of `$_SESSION`, and leaves `$_SESSION` unset,
+     * as on the request after a redirect before anything has started the session.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function injectPendingSession(array $data): void
+    {
+        unset($_SESSION);
+
+        Services::injectMock('session', new class ($data) {
+            /**
+             * @param array<string, mixed> $data
+             */
+            public function __construct(private array $data)
+            {
+            }
+
+            public function has(string $key): bool
+            {
+                return isset($this->data[$key]);
+            }
+
+            public function get(string $key): mixed
+            {
+                return $this->data[$key] ?? null;
+            }
+
+            public function getFlashdata(string $key): mixed
+            {
+                return $this->data[$key] ?? null;
+            }
+
+            public function remove(string $key): void
+            {
+                unset($this->data[$key]);
+            }
+
+            public function unmarkFlashdata(string $key): void
+            {
+            }
+        });
+    }
+
+    public function testARequestCarryingOnlyTheSessionCookieRendersPendingFlashData(): void
+    {
+        $this->injectPendingSession(['inertia.flash_data' => ['toast' => 'Saved']]);
+
+        $request = $this->makeRequestWithSessionCookie();
+
+        $this->assertSame(['toast' => 'Saved'], $this->renderPageFrom($this->newFactory($request), $request)['flash']);
+    }
+
+    public function testARequestCarryingOnlyTheSessionCookieRendersThePendingPreserveFragmentFlag(): void
+    {
+        $this->injectPendingSession(['inertia.preserve_fragment' => true]);
+
+        $request = $this->makeRequestWithSessionCookie();
+
+        $this->assertTrue($this->renderPageFrom($this->newFactory($request), $request)['preserveFragment']);
+    }
+
+    public function testARequestCarryingOnlyTheSessionCookieRendersThePendingClearHistoryFlag(): void
+    {
+        $this->injectPendingSession(['inertia.clear_history' => true]);
+
+        $request = $this->makeRequestWithSessionCookie();
+
+        $this->assertTrue($this->renderPageFrom($this->newFactory($request), $request)['clearHistory']);
+    }
+
+    public function testHistoryClearingIsIgnoredWithoutACookieAnExistingSessionOrAWrite(): void
+    {
+        BaseService::resetSingle('session');
+        unset($_SESSION);
+
+        $request = $this->makeRequest('users', ['X-Inertia' => 'true']);
+        $page    = $this->renderPageFrom($this->newFactory($request), $request);
+
+        $this->assertArrayNotHasKey('clearHistory', $page);
+        $this->assertFalse(BaseService::has('session'), 'The session service was constructed.');
+    }
+
+    public function testHistoryClearingIsHonouredForASessionTheRequestAlreadyStarted(): void
     {
         $this->mockSession();
         $_SESSION['inertia.clear_history'] = true;
@@ -611,8 +697,7 @@ final class ResponseFactoryTest extends CIUnitTestCase
         $request = $this->makeRequest('users', ['X-Inertia' => 'true']);
         $page    = $this->renderPageFrom($this->newFactory($request), $request);
 
-        $this->assertArrayNotHasKey('clearHistory', $page);
-        $this->assertSame(['inertia.clear_history' => true], $_SESSION);
+        $this->assertTrue($page['clearHistory']);
     }
 
     public function testHistoryRenderWithoutReasonNeverTouchesTheSession(): void
@@ -648,6 +733,8 @@ final class ResponseFactoryTest extends CIUnitTestCase
                 Assert::fail('The session service was invoked.');
             }
         });
+
+        unset($_SESSION);
 
         $page = $this->renderPageObject($this->newFactory(), 'Users/Index');
 
@@ -786,6 +873,210 @@ final class ResponseFactoryTest extends CIUnitTestCase
         $page = $this->renderPartial($factory, ['keep' => $prop, 'other' => 2], 'other');
 
         $this->assertSame(['keep' => 'x', 'other' => 2], $page['props']);
+    }
+
+    private function newSessionlessFactory(): ResponseFactory
+    {
+        BaseService::resetSingle('session');
+        unset($_SESSION);
+
+        return $this->newFactory();
+    }
+
+    public function testFlashDataIsCarriedByTheNextRenderOfTheSameRequestAndConsumedByIt(): void
+    {
+        $this->mockSession();
+        $factory = $this->newFactory();
+        $factory->flash('toast', 'Saved');
+
+        $page = $this->renderPageObject($factory, 'Users/Index');
+
+        $this->assertSame(['toast' => 'Saved'], $page['flash']);
+        $this->assertArrayNotHasKey('inertia.flash_data', $_SESSION ?? []);
+        $this->assertArrayNotHasKey('flash', $this->renderPageObject($factory, 'Users/Index'));
+    }
+
+    public function testFlashDataSetInOneRequestIsPresentInTheNextRenderAndAbsentAfterIt(): void
+    {
+        $this->mockSession();
+        $this->newFactory()->flash('toast', 'Saved');
+
+        $request = $this->makeRequestWithSessionCookie();
+        $page    = $this->renderPageFrom($this->newFactory($request), $request);
+        $again   = $this->renderPageFrom($this->newFactory($request), $request);
+
+        $this->assertSame(['toast' => 'Saved'], $page['flash']);
+        $this->assertArrayNotHasKey('flash', $again);
+    }
+
+    public function testFlashMergesNewDataOverWhatIsAlreadyFlashed(): void
+    {
+        $this->mockSession();
+        $factory = $this->newFactory();
+        $factory->flash(['a' => 1]);
+        $factory->flash('b', 2);
+
+        $this->assertSame(['a' => 1, 'b' => 2], $factory->getFlashed());
+
+        $factory->flash('a', 3);
+
+        $this->assertSame(['a' => 3, 'b' => 2], $this->renderPageObject($factory, 'Users/Index')['flash']);
+    }
+
+    public function testFlashReadsAStringBackedEnumKeyByItsValueAndAPureEnumKeyByItsName(): void
+    {
+        $this->mockSession();
+        $factory = $this->newFactory();
+        $factory->flash(TestPage::Users, 'x');
+        $factory->flash(TestPureEnum::Dashboard, 'y');
+
+        $this->assertSame(['Users/Index' => 'x', 'Dashboard' => 'y'], $factory->getFlashed());
+    }
+
+    public function testFlashReturnsTheFactory(): void
+    {
+        $this->mockSession();
+        $factory = $this->newFactory();
+
+        $this->assertSame($factory, $factory->flash('k', 'v'));
+    }
+
+    public function testAResponseFlashReachesItsOwnPageAndReturnsTheResponse(): void
+    {
+        $this->mockSession();
+        $factory  = $this->newFactory();
+        $response = $factory->render('Users/Index');
+
+        $this->assertSame($response, $response->flash('k', 'v'));
+
+        $page = json_decode((string) $response->toResponse($this->makeRequest('users', ['X-Inertia' => 'true']), $this->makeResponse())->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame(['k' => 'v'], $page['flash']);
+    }
+
+    public function testGetFlashedReadsWithoutRemovingAndPullFlashedRemoves(): void
+    {
+        $this->mockSession();
+        $factory = $this->newFactory();
+        $factory->flash('k', 'v');
+
+        $this->assertSame(['k' => 'v'], $factory->getFlashed());
+        $this->assertSame(['k' => 'v'], $factory->getFlashed());
+        $this->assertSame(['k' => 'v'], $factory->pullFlashed());
+        $this->assertSame([], $factory->getFlashed());
+        $this->assertSame([], $factory->pullFlashed());
+        $this->assertSame([], session()->getFlashdata());
+    }
+
+    public function testFlashDataIsNeverReadFromASessionTheRequestDoesNotCarry(): void
+    {
+        $factory = $this->newSessionlessFactory();
+
+        $this->assertSame([], $factory->getFlashed());
+        $this->assertSame([], $factory->pullFlashed());
+        $this->assertArrayNotHasKey('flash', $this->renderPageObject($factory, 'Users/Index'));
+        $this->assertFalse(BaseService::has('session'), 'The session service was constructed.');
+    }
+
+    public function testThePageKeysFollowTheMetadataInTheOrderClearHistoryEncryptHistoryFlashPreserveFragment(): void
+    {
+        $this->mockSession();
+        $factory = $this->newFactory(null, true);
+        $factory->preserveFragment();
+        $factory->flash('k', 'v');
+        $factory->clearHistory();
+
+        $page = $this->renderPageObject($factory, 'Users/Index');
+
+        $this->assertSame(['component', 'props', 'url', 'version', 'clearHistory', 'encryptHistory', 'flash', 'preserveFragment'], array_keys($page));
+    }
+
+    public function testPreserveFragmentFiresOnTheNextRequestOnly(): void
+    {
+        $this->mockSession();
+        $this->newFactory()->preserveFragment();
+
+        $request = $this->makeRequestWithSessionCookie();
+        $page    = $this->renderPageFrom($this->newFactory($request), $request);
+        $again   = $this->renderPageFrom($this->newFactory($request), $request);
+
+        $this->assertTrue($page['preserveFragment']);
+        $this->assertArrayNotHasKey('preserveFragment', $again);
+        $this->assertSame([], $_SESSION);
+    }
+
+    public function testPageHasNoPreserveFragmentKeyWithoutTheCall(): void
+    {
+        $this->mockSession();
+
+        $this->assertArrayNotHasKey('preserveFragment', $this->renderPageObject($this->newFactory(), 'Users/Index'));
+    }
+
+    public function testPreserveFragmentIsIgnoredWithoutACookieAnExistingSessionOrAWrite(): void
+    {
+        BaseService::resetSingle('session');
+        unset($_SESSION);
+
+        $request = $this->makeRequest('users', ['X-Inertia' => 'true']);
+
+        $this->assertArrayNotHasKey('preserveFragment', $this->renderPageFrom($this->newFactory($request), $request));
+        $this->assertFalse(BaseService::has('session'), 'The session service was constructed.');
+    }
+
+    public function testTheSessionKeysHoldLaravelsNames(): void
+    {
+        $this->assertSame(
+            [
+                'CLEAR_HISTORY'     => 'inertia.clear_history',
+                'FLASH_DATA'        => 'inertia.flash_data',
+                'PRESERVE_FRAGMENT' => 'inertia.preserve_fragment',
+            ],
+            (new ReflectionClass(SessionKey::class))->getConstants(),
+        );
+    }
+
+    public function testBackRedirectsToTheReferer(): void
+    {
+        $request  = $this->makeRequest('users', ['Referer' => 'https://example.com/a?b=1']);
+        $response = $this->newFactory($request)->back();
+
+        $this->assertSame(302, $response->getStatusCode());
+        $this->assertSame('https://example.com/a?b=1', $response->getHeaderLine('Location'));
+    }
+
+    public function testBackTakesAStatusAndHeaders(): void
+    {
+        $request  = $this->makeRequest('users', ['Referer' => 'https://example.com/a']);
+        $response = $this->newFactory($request)->back(303, ['X-A' => '1']);
+
+        $this->assertSame(303, $response->getStatusCode());
+        $this->assertSame('1', $response->getHeaderLine('X-A'));
+    }
+
+    public function testBackFallsBackToTheStoredPreviousUrlWithoutAReferer(): void
+    {
+        $this->mockSession();
+        $_SESSION['_ci_previous_url'] = 'https://example.com/previous';
+        $request                      = $this->makeRequestWithSessionCookie();
+
+        $this->assertSame('https://example.com/previous', $this->newFactory($request)->back()->getHeaderLine('Location'));
+    }
+
+    public function testBackUsesTheFallbackWhenThereIsNoRefererOrPreviousUrl(): void
+    {
+        $this->mockSession();
+        $request = $this->makeRequestWithSessionCookie();
+
+        $this->assertSame(site_url('/home'), $this->newFactory($request)->back(302, [], '/home')->getHeaderLine('Location'));
+        $this->assertSame(site_url('/'), $this->newFactory($request)->back()->getHeaderLine('Location'));
+    }
+
+    public function testBackNeverStartsASessionTheRequestDoesNotCarry(): void
+    {
+        $response = $this->newSessionlessFactory()->back();
+
+        $this->assertSame(site_url('/'), $response->getHeaderLine('Location'));
+        $this->assertFalse(BaseService::has('session'), 'The session service was constructed.');
     }
 
     public function testRenderAcceptsAStringBackedEnumAsTheComponent(): void

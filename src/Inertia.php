@@ -58,6 +58,54 @@ final class Inertia
     }
 
     /**
+     * @see ResponseFactory::preserveFragment()
+     */
+    public static function preserveFragment(): void
+    {
+        self::factory()->preserveFragment();
+    }
+
+    /**
+     * @param array<string, mixed>|BackedEnum|string|UnitEnum $key
+     *
+     * @see ResponseFactory::flash()
+     */
+    public static function flash(array|BackedEnum|string|UnitEnum $key, mixed $value = null): ResponseFactory
+    {
+        return self::factory()->flash($key, $value);
+    }
+
+    /**
+     * @return array<string, mixed>
+     *
+     * @see ResponseFactory::getFlashed()
+     */
+    public static function getFlashed(): array
+    {
+        return self::factory()->getFlashed();
+    }
+
+    /**
+     * @return array<string, mixed>
+     *
+     * @see ResponseFactory::pullFlashed()
+     */
+    public static function pullFlashed(): array
+    {
+        return self::factory()->pullFlashed();
+    }
+
+    /**
+     * @param array<string, string> $headers
+     *
+     * @see ResponseFactory::back()
+     */
+    public static function back(int $status = 302, array $headers = [], false|string $fallback = false): RedirectResponse
+    {
+        return self::factory()->back($status, $headers, $fallback);
+    }
+
+    /**
      * @param callable $callback Produces the prop's value; invoked only when a partial reload
      *                           reaches the prop.
      * @param string   $group    The batch the client loads this prop in.

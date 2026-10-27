@@ -12,6 +12,7 @@ use CodeIgniter\HTTP\ResponseInterface;
 use Ejklock\Ci4Inertia\AlwaysProp;
 use Ejklock\Ci4Inertia\ResponseFactory;
 use Ejklock\Ci4Inertia\Support\Header;
+use Ejklock\Ci4Inertia\Support\SessionKey;
 
 /**
  * Enforces the wire-level Inertia protocol rules at the filter layer: shares the CI4
@@ -107,12 +108,13 @@ class InertiaFilter implements FilterInterface
     }
 
     /**
-     * Marks every response `Vary: X-Inertia`; on an Inertia request it then applies the
+     * Marks every response `Vary: X-Inertia`, and flashes the Inertia flash data again on any
+     * redirect so it reaches the page the redirect leads to; on an Inertia request it then applies the
      * protocol rules in inertia-laravel's order: records an Inertia `GET` as the previous
      * URL, answers an empty `200` through `onEmptyResponse()`, converts a `302` to a `303`
      * when the method was `PUT`, `PATCH`, or `DELETE`, and answers a redirect whose
      * `Location` holds a `#fragment` through `onRedirectWithFragment()` unless the request
-     * is a prefetch. A request without `X-Inertia` is returned as it is.
+     * is a prefetch. A request without `X-Inertia` is returned as it is, apart from that flash.
      *
      * @param list<string>|null $arguments Unused; this filter takes no route arguments.
      */
@@ -120,11 +122,15 @@ class InertiaFilter implements FilterInterface
     {
         assert($request instanceof IncomingRequest);
 
+        $wasRedirect = $this->isRedirectStatus($response);
+
+        if ($wasRedirect) {
+            $this->reflashInertiaFlashData($request);
+        }
+
         if (! $request->hasHeader(Header::INERTIA)) {
             return $this->applyVaryHeader($response);
         }
-
-        $wasRedirect = $this->isRedirectStatus($response);
 
         if ($this->shouldStoreCurrentUrl($request, $response)) {
             session()->set(self::PREVIOUS_URL_SESSION_KEY, (string) $request->getUri());
@@ -334,6 +340,30 @@ class InertiaFilter implements FilterInterface
 
         if ($flashKeys !== []) {
             $session->keepFlashdata($flashKeys);
+        }
+    }
+
+    /**
+     * Flashes the Inertia flash data again, so a redirect response does not consume it before
+     * the page it redirects to can carry it. Nothing is written when there is none, and a request
+     * that carries no session is left without one.
+     */
+    private function reflashInertiaFlashData(IncomingRequest $request): void
+    {
+        if (! $this->requestCarriesSession($request)) {
+            return;
+        }
+
+        $session = session();
+
+        if (! $session->has(SessionKey::FLASH_DATA)) {
+            return;
+        }
+
+        $flashed = $session->getFlashdata(SessionKey::FLASH_DATA);
+
+        if (is_array($flashed) && $flashed !== []) {
+            $session->setFlashdata(SessionKey::FLASH_DATA, $flashed);
         }
     }
 
