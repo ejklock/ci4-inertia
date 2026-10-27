@@ -14,6 +14,7 @@ use CodeIgniter\HTTP\UserAgent;
 use CodeIgniter\Test\CIUnitTestCase;
 use Config\App as AppConfig;
 use Config\Services;
+use Ejklock\Ci4Inertia\ComponentNotFoundException;
 use Ejklock\Ci4Inertia\Config\Inertia as InertiaConfig;
 use Ejklock\Ci4Inertia\ProvidesInertiaProperties;
 use Ejklock\Ci4Inertia\RenderContext;
@@ -41,6 +42,11 @@ use UnitEnum;
 final class ResponseFactoryTest extends CIUnitTestCase
 {
     private bool $sessionGlobalExisted = false;
+
+    /**
+     * @var array{bool, list<string>, list<string>}
+     */
+    private array $originalPageConfig = [false, [], []];
 
     /**
      * @var array<array-key, mixed>
@@ -550,10 +556,17 @@ final class ResponseFactoryTest extends CIUnitTestCase
 
         $this->sessionGlobalExisted = isset($_SESSION);
         $this->sessionGlobalBefore  = $_SESSION ?? [];
+
+        $inertia                  = config('Inertia');
+        $this->originalPageConfig = [$inertia->ensurePagesExist, $inertia->pagePaths, $inertia->pageExtensions];
+        $inertia->pagePaths       = [__DIR__ . '/_support/pages', __DIR__ . '/_support/pages-extra'];
     }
 
     protected function tearDown(): void
     {
+        $inertia                                                                    = config('Inertia');
+        [$inertia->ensurePagesExist, $inertia->pagePaths, $inertia->pageExtensions] = $this->originalPageConfig;
+
         Services::resetSingle('session');
         service('superglobals')->setGlobalArray('cookie', []);
 
@@ -1244,6 +1257,107 @@ final class ResponseFactoryTest extends CIUnitTestCase
         $factory->transformComponentUsing(static fn ($component): string => $component instanceof TestPage ? 'Custom/' . $component->name : 'wrong');
 
         $this->assertSame('Custom/Users', $this->renderPageObject($factory, TestPage::Users)['component']);
+    }
+
+    public function testDefaultsForThePageExistenceChecksMatchLaravel(): void
+    {
+        $config = new InertiaConfig();
+
+        $this->assertFalse($config->ensurePagesExist);
+        $this->assertTrue($config->ensurePagesExistInTests);
+        $this->assertSame([ROOTPATH . 'resources/js/pages'], $config->pagePaths);
+        $this->assertSame(['js', 'jsx', 'svelte', 'ts', 'tsx', 'vue'], $config->pageExtensions);
+    }
+
+    public function testRenderDoesNotCheckThePageFileByDefault(): void
+    {
+        $this->assertSame('Missing/Page', $this->renderPageObject($this->newFactory(), 'Missing/Page')['component']);
+    }
+
+    public function testRenderWithTheCheckOnAcceptsAnExistingPage(): void
+    {
+        config('Inertia')->ensurePagesExist = true;
+
+        $this->assertSame('Users/Index', $this->renderPageObject($this->newFactory(), 'Users/Index')['component']);
+    }
+
+    public function testRenderWithTheCheckOnMapsDotsToDirectories(): void
+    {
+        config('Inertia')->ensurePagesExist = true;
+
+        $this->assertSame('Users.Index', $this->renderPageObject($this->newFactory(), 'Users.Index')['component']);
+    }
+
+    public function testRenderWithTheCheckOnRejectsAMissingPage(): void
+    {
+        config('Inertia')->ensurePagesExist = true;
+
+        $this->expectException(ComponentNotFoundException::class);
+        $this->expectExceptionMessage('Inertia page component [Missing/Page] not found.');
+
+        $this->newFactory()->render('Missing/Page');
+    }
+
+    public function testAMissingPageIsAnInvalidArgument(): void
+    {
+        config('Inertia')->ensurePagesExist = true;
+
+        $this->expectException(InvalidArgumentException::class);
+
+        $this->newFactory()->render('Missing/Page');
+    }
+
+    public function testRenderWithTheCheckOnFindsAPageInTheSecondPath(): void
+    {
+        config('Inertia')->ensurePagesExist = true;
+
+        $this->assertSame('Extra/Page', $this->renderPageObject($this->newFactory(), 'Extra/Page')['component']);
+    }
+
+    public function testRenderWithTheCheckOnIgnoresAFileWithAnUnlistedExtension(): void
+    {
+        config('Inertia')->ensurePagesExist = true;
+
+        $this->expectException(ComponentNotFoundException::class);
+        $this->expectExceptionMessage('Inertia page component [Unlisted/Page] not found.');
+
+        $this->newFactory()->render('Unlisted/Page');
+    }
+
+    public function testRenderWithTheCheckOnHonorsTheConfiguredExtensions(): void
+    {
+        $inertia                   = config('Inertia');
+        $inertia->ensurePagesExist = true;
+        $inertia->pageExtensions   = ['html'];
+
+        $this->assertSame('Unlisted/Page', $this->renderPageObject($this->newFactory(), 'Unlisted/Page')['component']);
+    }
+
+    public function testRenderWithTheCheckOnUsesTheNameOfAnEnumComponent(): void
+    {
+        config('Inertia')->ensurePagesExist = true;
+
+        $this->assertSame('Users/Index', $this->renderPageObject($this->newFactory(), TestPage::Users)['component']);
+
+        $this->expectException(ComponentNotFoundException::class);
+        $this->expectExceptionMessage('Inertia page component [Dashboard] not found.');
+
+        $this->newFactory()->render(TestPureEnum::Dashboard);
+    }
+
+    public function testRenderWithTheCheckOnUsesTheTransformedName(): void
+    {
+        config('Inertia')->ensurePagesExist = true;
+
+        $factory = $this->newFactory();
+        $factory->transformComponentUsing(static fn ($component): string => $component . '/Index');
+
+        $this->assertSame('Users/Index', $this->renderPageObject($factory, 'Users')['component']);
+
+        $this->expectException(ComponentNotFoundException::class);
+        $this->expectExceptionMessage('Inertia page component [Missing/Index] not found.');
+
+        $factory->render('Missing');
     }
 
     public function testSetRootViewChangesTheViewOfLaterRendersOnly(): void

@@ -55,6 +55,32 @@ class Inertia extends BaseConfig
     public bool $exposeSharedPropKeys = true;
 
     /**
+     * Whether `ResponseFactory::render()` throws `ComponentNotFoundException` when no file under
+     * `$pagePaths` with one of `$pageExtensions` matches the component name.
+     */
+    public bool $ensurePagesExist = false;
+
+    /**
+     * Whether `AssertableInertia::component()` also asserts that the page file exists; a call
+     * passes its own `$shouldExist` argument to override it.
+     */
+    public bool $ensurePagesExistInTests = true;
+
+    /**
+     * The directories searched for a page file by the two checks above.
+     *
+     * @var list<string>
+     */
+    public array $pagePaths = [ROOTPATH . 'resources/js/pages'];
+
+    /**
+     * The extensions, without the dot, a page file may have.
+     *
+     * @var list<string>
+     */
+    public array $pageExtensions = ['js', 'jsx', 'svelte', 'ts', 'tsx', 'vue'];
+
+    /**
      * Resolves the asset version sent on every page object. A client whose
      * `X-Inertia-Version` differs from this value is running assets from a previous deploy
      * and is forced into a hard reload rather than fed data from the new backend.

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Ejklock\Ci4Inertia\Testing;
 
 use Closure;
+use Ejklock\Ci4Inertia\PageFinder;
 use Ejklock\Ci4Inertia\Support\Header;
 use PHPUnit\Framework\Assert;
 
@@ -116,9 +117,21 @@ final readonly class AssertableInertia
         return $value;
     }
 
-    public function component(string $expected): static
+    /**
+     * Asserts the page's component and, unless turned off, that its page file exists.
+     *
+     * @param bool|null $shouldExist `true` always checks the file, `false` never does, `null`
+     *                               follows `Config\Inertia::$ensurePagesExistInTests`.
+     */
+    public function component(string $expected, ?bool $shouldExist = null): static
     {
         $this->assertPageKey('component', $expected);
+
+        $config = config('Inertia');
+
+        if (($shouldExist ?? $config->ensurePagesExistInTests) && ! (new PageFinder($config->pagePaths, $config->pageExtensions))->exists($expected)) {
+            Assert::fail(sprintf('Inertia page component file [%s] does not exist.', $expected));
+        }
 
         return $this;
     }
@@ -246,7 +259,7 @@ final readonly class AssertableInertia
 
         $reloaded = self::fromPageWithReloader(($this->reloader)($url, $headers), $this->reloader);
 
-        $reloaded->component($component);
+        $reloaded->component($component, false);
         $reloaded->url($url);
         $reloaded->version($version);
 

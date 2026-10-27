@@ -94,12 +94,17 @@ final class ResponseFactory
      *                                                                     `ProvidesInertiaProperties`
      *                                                                     stands for a list of that one.
      *
-     * @throws InvalidArgumentException When the component is not a string once the transformer and
-     *                                  the enum mapping have run, such as an int-backed enum.
+     * @throws ComponentNotFoundException When `Config\Inertia::$ensurePagesExist` is on and no page
+     *                                    file matches the component name once the transformer and
+     *                                    the enum mapping have run.
+     * @throws InvalidArgumentException   When the component is not a string once the transformer and
+     *                                    the enum mapping have run, such as an int-backed enum.
      */
     public function render(BackedEnum|string|UnitEnum $component, array|ProvidesInertiaProperties $props = []): InertiaResponse
     {
         $component = $this->componentName($component);
+
+        $this->ensureComponentExists($component);
 
         if ($props instanceof ProvidesInertiaProperties) {
             $props = [$props];
@@ -541,6 +546,22 @@ final class ResponseFactory
         }
 
         return $name;
+    }
+
+    /**
+     * @throws ComponentNotFoundException When the check is on and no page file matches.
+     */
+    private function ensureComponentExists(string $component): void
+    {
+        $config = config('Inertia');
+
+        if (! $config->ensurePagesExist) {
+            return;
+        }
+
+        if (! (new PageFinder($config->pagePaths, $config->pageExtensions))->exists($component)) {
+            throw new ComponentNotFoundException(sprintf('Inertia page component [%s] not found.', $component));
+        }
     }
 
     /**

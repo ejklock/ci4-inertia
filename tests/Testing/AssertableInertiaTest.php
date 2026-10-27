@@ -20,6 +20,28 @@ use ReflectionMethod;
 final class AssertableInertiaTest extends CIUnitTestCase
 {
     /**
+     * @var array{bool, list<string>, list<string>}
+     */
+    private array $originalPageConfig = [true, [], []];
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $inertia                  = config('Inertia');
+        $this->originalPageConfig = [$inertia->ensurePagesExistInTests, $inertia->pagePaths, $inertia->pageExtensions];
+        $inertia->pagePaths       = [__DIR__ . '/../_support/pages'];
+    }
+
+    protected function tearDown(): void
+    {
+        $inertia                                                                           = config('Inertia');
+        [$inertia->ensurePagesExistInTests, $inertia->pagePaths, $inertia->pageExtensions] = $this->originalPageConfig;
+
+        parent::tearDown();
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function page(): array
@@ -99,6 +121,44 @@ final class AssertableInertiaTest extends CIUnitTestCase
         $assertable = $this->assertable();
 
         $this->assertSame($assertable, $assertable->component('Users/Index')->url('/users')->version('v1'));
+    }
+
+    public function testComponentFailsWhenThePageFileIsMissing(): void
+    {
+        $this->expectFailure('Inertia page component file [Missing/Page] does not exist.');
+
+        AssertableInertia::fromPage(['component' => 'Missing/Page'] + $this->page())->component('Missing/Page');
+    }
+
+    public function testComponentSkipsTheFileCheckWhenAskedTo(): void
+    {
+        $page = AssertableInertia::fromPage(['component' => 'Missing/Page'] + $this->page());
+
+        $this->assertSame($page, $page->component('Missing/Page', false));
+    }
+
+    public function testComponentChecksTheFileWhenAskedToEvenIfTheConfigTurnsItOff(): void
+    {
+        config('Inertia')->ensurePagesExistInTests = false;
+
+        $this->expectFailure('Inertia page component file [Missing/Page] does not exist.');
+
+        AssertableInertia::fromPage(['component' => 'Missing/Page'] + $this->page())->component('Missing/Page', true);
+    }
+
+    public function testComponentFollowsTheConfigWhenNotToldWhetherToCheck(): void
+    {
+        config('Inertia')->ensurePagesExistInTests = false;
+        $page                                      = AssertableInertia::fromPage(['component' => 'Missing/Page'] + $this->page());
+
+        $this->assertSame($page, $page->component('Missing/Page'));
+    }
+
+    public function testComponentFailsOnTheNameBeforeLookingForTheFile(): void
+    {
+        $this->expectFailure('Missing/Page', 'Users/Index');
+
+        $this->assertable()->component('Missing/Page', true);
     }
 
     public function testComponentFailureNamesBothComponents(): void
@@ -323,6 +383,14 @@ final class AssertableInertiaTest extends CIUnitTestCase
         $reloaded = $override + $this->page();
 
         return AssertableInertia::fromPageWithReloader($this->page(), static fn (): array => $reloaded);
+    }
+
+    public function testReloadComparesTheComponentWithoutLookingForTheFile(): void
+    {
+        $page     = ['component' => 'Missing/Page'] + $this->page();
+        $reloaded = AssertableInertia::fromPageWithReloader($page, static fn (): array => $page);
+
+        $this->assertSame($reloaded, $reloaded->reload());
     }
 
     public function testFromPageTakesOnlyThePage(): void

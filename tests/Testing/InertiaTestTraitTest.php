@@ -28,6 +28,27 @@ final class InertiaTestTraitTest extends CIUnitTestCase
     private const SHELL_VIEW = 'Ejklock\Ci4InertiaTestSupport\Views\shell';
 
     /**
+     * @var list<string>
+     */
+    private array $originalPagePaths = [];
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $inertia                 = config('Inertia');
+        $this->originalPagePaths = $inertia->pagePaths;
+        $inertia->pagePaths      = [__DIR__ . '/../_support/pages'];
+    }
+
+    protected function tearDown(): void
+    {
+        config('Inertia')->pagePaths = $this->originalPagePaths;
+
+        parent::tearDown();
+    }
+
+    /**
      * @param array<string, mixed> $props
      */
     private function inertiaResult(bool $asJson, array $props = ['title' => 'Users', 'users' => [['name' => 'Ada']]], bool $preserveBigIntegers = false): TestResponse
