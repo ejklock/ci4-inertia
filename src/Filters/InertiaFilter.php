@@ -35,6 +35,12 @@ class InertiaFilter implements FilterInterface
     private const PREVIOUS_URL_SESSION_KEY = '_ci_previous_url';
 
     /**
+     * Whether the `errors` prop carries every message of a field as a list, rather than
+     * the first one. An application sets it by extending this filter.
+     */
+    protected bool $withAllErrors = false;
+
+    /**
      * Installs `version()` as the lazy asset version resolver, shares every entry of
      * `share()` as a prop, then answers a stale-version `GET` with the `409` reload
      * response before the controller runs.
@@ -86,7 +92,9 @@ class InertiaFilter implements FilterInterface
     /**
      * The props shared on every Inertia render, keyed by prop name: the current session
      * validation errors as `errors` (the `errors` session array, else the errors
-     * `redirect()->withInput()` flashed), an empty object when there are none. An extending
+     * `redirect()->withInput()` flashed), an empty object when there are none or the request
+     * carries no session, with one message per field unless `$withAllErrors` is on, and
+     * scoped under the `X-Inertia-Error-Bag` name when the request sends one. An extending
      * class merges its own entries into the parent's result.
      *
      * @return array<string, mixed>
@@ -94,7 +102,7 @@ class InertiaFilter implements FilterInterface
     protected function share(IncomingRequest $request): array
     {
         return [
-            'errors' => new AlwaysProp(fn (): object => (object) $this->sessionValidationErrors()),
+            'errors' => new AlwaysProp(fn (): object => $this->resolveValidationErrors($request)),
         ];
     }
 
@@ -152,7 +160,7 @@ class InertiaFilter implements FilterInterface
             && $request->getMethod() === Method::GET
             && $response->getStatusCode() === 200
             && $response->getHeaderLine(Header::INERTIA) === 'true'
-            && ($request->getCookie(config('Session')->cookieName) !== null || isset($_SESSION))
+            && $this->requestCarriesSession($request)
             && ! $this->isPrefetch($request)
             && $request->getHeaderLine(Header::PRECOGNITION) !== 'true'
             && ! $this->isPartialReloadOfRenderedComponent($request, $response);
@@ -233,6 +241,40 @@ class InertiaFilter implements FilterInterface
         $page = json_decode((string) $response->getBody(), true);
 
         return is_array($page) && ($page['component'] ?? null) === $component;
+    }
+
+    /**
+     * Reports whether the request already carries a session: a session cookie, or a session
+     * the application started earlier in the request. Reading the session service without
+     * one would start a session just to find it empty.
+     */
+    private function requestCarriesSession(IncomingRequest $request): bool
+    {
+        return $request->getCookie(config('Session')->cookieName) !== null || isset($_SESSION);
+    }
+
+    /**
+     * Builds the `errors` prop value: the session validation errors with one message per
+     * field (every message as a list when `$withAllErrors` is on), under the
+     * `X-Inertia-Error-Bag` name when the request sends one and there are errors to scope.
+     * A request carrying no session has no errors, and the session is not started to look.
+     */
+    private function resolveValidationErrors(IncomingRequest $request): object
+    {
+        if (! $this->requestCarriesSession($request)) {
+            return (object) [];
+        }
+
+        $errors = array_map(
+            fn (mixed $messages): mixed => $this->withAllErrors
+                ? array_values((array) $messages)
+                : (is_array($messages) ? ($messages[array_key_first($messages)] ?? '') : $messages),
+            $this->sessionValidationErrors(),
+        );
+
+        $bag = $request->getHeaderLine(Header::ERROR_BAG);
+
+        return (object) ($bag !== '' && $errors !== [] ? [$bag => (object) $errors] : $errors);
     }
 
     /**

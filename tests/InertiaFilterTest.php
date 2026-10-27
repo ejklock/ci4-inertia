@@ -1153,6 +1153,119 @@ final class InertiaFilterTest extends CIUnitTestCase
         yield 'neither source' => [[], []];
     }
 
+    /**
+     * @param array<string, mixed>  $session
+     * @param array<string, string> $headers
+     */
+    #[DataProvider('provideTheErrorsPropShape')]
+    public function testTheErrorsPropShape(bool $withAllErrors, array $session, array $headers, string $expectedJson): void
+    {
+        if ($withAllErrors) {
+            config('Filters')->aliases['inertia'] = (new class () extends InertiaFilter {
+                protected bool $withAllErrors = true;
+            })::class;
+        }
+
+        $this->withRoutes([$this->renderingRoute()]);
+
+        $result = $this->withSession($session)
+            ->withHeaders(['X-Inertia' => 'true', 'X-Inertia-Version' => self::CURRENT_VERSION] + $headers)
+            ->get('/page');
+
+        $result->assertStatus(200);
+
+        $page = json_decode((string) $result->response()->getBody(), flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame($expectedJson, json_encode($page->props->errors, JSON_THROW_ON_ERROR));
+    }
+
+    /**
+     * @return iterable<string, array{0: bool, 1: array<string, mixed>, 2: array<string, string>, 3: string}>
+     */
+    public static function provideTheErrorsPropShape(): iterable
+    {
+        $bag = ['X-Inertia-Error-Bag' => 'createUser'];
+
+        yield 'a string message stays a string' => [false, ['errors' => ['subject' => 'Required.']], [], '{"subject":"Required."}'];
+
+        yield 'a list keeps only its first message' => [false, ['errors' => ['subject' => ['Required.', 'Too short.']]], [], '{"subject":"Required."}'];
+
+        yield 'every message as a list when all errors are on' => [true, ['errors' => ['subject' => ['Required.', 'Too short.']]], [], '{"subject":["Required.","Too short."]}'];
+
+        yield 'a string message becomes a one-item list when all errors are on' => [true, ['errors' => ['subject' => 'Required.']], [], '{"subject":["Required."]}'];
+
+        yield 'a message list with gaps in its keys is sent as a list' => [true, ['errors' => ['subject' => [2 => 'Required.', 5 => 'Too short.']]], [], '{"subject":["Required.","Too short."]}'];
+
+        yield 'numeric field names under an error bag stay an object' => [false, ['errors' => ['0' => 'Taken.']], $bag, '{"createUser":{"0":"Taken."}}'];
+
+        yield 'no errors is an object' => [false, [], [], '{}'];
+
+        yield 'no errors is an object when all errors are on' => [true, [], [], '{}'];
+
+        yield 'the error bag header scopes the errors' => [false, ['errors' => ['email' => 'Taken.']], $bag, '{"createUser":{"email":"Taken."}}'];
+
+        yield 'the error bag header without errors is an empty object' => [false, [], $bag, '{}'];
+
+        yield 'an empty error bag header leaves the flat map' => [false, ['errors' => ['email' => 'Taken.']], ['X-Inertia-Error-Bag' => ''], '{"email":"Taken."}'];
+
+        yield 'the error bag header with all errors on' => [true, ['errors' => ['email' => 'Taken.']], $bag, '{"createUser":{"email":["Taken."]}}'];
+    }
+
+    public function testErrorsAreEmptyAndNoSessionIsStartedWhenTheRequestCarriesNone(): void
+    {
+        unset($_SESSION);
+        BaseService::resetSingle('session');
+
+        $errors = $this->sharedErrors($this->inertiaGetRequest());
+
+        $this->assertSame([], get_object_vars($errors));
+        $this->assertFalse(BaseService::has('session'), 'The session service was constructed.');
+        $this->assertFalse(isset($_SESSION));
+    }
+
+    public function testErrorsAreReadFromTheSessionWhenTheRequestCarriesTheSessionCookie(): void
+    {
+        unset($_SESSION);
+        BaseService::injectMock('session', new class () {
+            public function get(string $key): mixed
+            {
+                return $key === 'errors' ? ['subject' => 'Required.'] : null;
+            }
+        });
+        $request = $this->inertiaGetRequest();
+        $request->setGlobal('cookie', [(string) config('Session')->cookieName => 'abc']);
+
+        $this->assertSame(['subject' => 'Required.'], get_object_vars($this->sharedErrors($request)));
+    }
+
+    public function testErrorsAreReadFromASessionTheApplicationAlreadyStarted(): void
+    {
+        $_SESSION = [];
+        BaseService::injectMock('session', new class () {
+            public function get(string $key): mixed
+            {
+                return $key === 'errors' ? ['subject' => 'Required.'] : null;
+            }
+        });
+
+        $this->assertSame(['subject' => 'Required.'], get_object_vars($this->sharedErrors($this->inertiaGetRequest())));
+    }
+
+    /**
+     * Resolves the shared `errors` prop the way a render does, without a response.
+     */
+    private function sharedErrors(IncomingRequest $request): object
+    {
+        $filter = new class () extends InertiaFilter {
+            public function sharedProps(IncomingRequest $request): array
+            {
+                return $this->share($request);
+            }
+        };
+
+        return ($filter->sharedProps($request)['errors'])();
+    }
+
     public function testValidationErrorsFromWithInputReachTheNextInertiaPage(): void
     {
         $this->withRoutes([
