@@ -16,8 +16,13 @@ use Ejklock\Ci4Inertia\DeferProp;
 use Ejklock\Ci4Inertia\Deferrable;
 use Ejklock\Ci4Inertia\MergeProp;
 use Ejklock\Ci4Inertia\OptionalProp;
+use Ejklock\Ci4Inertia\PropertyContext;
+use Ejklock\Ci4Inertia\ProvidesInertiaProperties;
+use Ejklock\Ci4Inertia\ProvidesInertiaProperty;
+use Ejklock\Ci4Inertia\RenderContext;
 use Ejklock\Ci4Inertia\ResponseFactory;
 use Exception;
+use Generator;
 use InvalidArgumentException;
 use JsonSerializable;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -36,8 +41,8 @@ final class PropsResolverTest extends CIUnitTestCase
     private const COMPONENT = 'Users/Index';
 
     /**
-     * @param array<string, mixed>  $props
-     * @param array<string, string> $headers
+     * @param array<array-key, mixed> $props
+     * @param array<string, string>   $headers
      *
      * @return array<string, mixed>
      */
@@ -618,5 +623,282 @@ final class PropsResolverTest extends CIUnitTestCase
         $this->assertSame(['a' => 1], $page['props']);
         $this->assertSame(['g' => ['feed']], $page['deferredProps']);
         $this->assertSame(['feed'], $page['mergeProps']);
+    }
+
+    /**
+     * @param Closure(PropertyContext): mixed $convert
+     */
+    private function propertyProvider(Closure $convert): ProvidesInertiaProperty
+    {
+        return new class ($convert) implements ProvidesInertiaProperty {
+            public function __construct(private readonly Closure $convert)
+            {
+            }
+
+            public function toInertiaProperty(PropertyContext $prop): mixed
+            {
+                return ($this->convert)($prop);
+            }
+        };
+    }
+
+    /**
+     * @param Closure(RenderContext): iterable<string, mixed> $provide
+     */
+    private function propertiesProvider(Closure $provide): ProvidesInertiaProperties
+    {
+        return new class ($provide) implements ProvidesInertiaProperties {
+            public function __construct(private readonly Closure $provide)
+            {
+            }
+
+            public function toInertiaProperties(RenderContext $context): iterable
+            {
+                return ($this->provide)($context);
+            }
+        };
+    }
+
+    public function testAPropertyProviderIsConvertedWithItsKeySiblingsAndRequest(): void
+    {
+        $seen = null;
+        $page = $this->renderPage([
+            'user' => $this->propertyProvider(static function (PropertyContext $prop) use (&$seen): string {
+                $seen = $prop;
+
+                return 'Ada';
+            }),
+            'role' => 'admin',
+        ]);
+
+        $this->assertSame(['user' => 'Ada', 'role' => 'admin'], $page['props']);
+        $this->assertInstanceOf(PropertyContext::class, $seen);
+        $this->assertSame('user', $seen->key);
+        $this->assertSame(['user', 'role'], array_keys($seen->props));
+        $this->assertSame('admin', $seen->props['role']);
+        $this->assertSame('true', $seen->request->getHeaderLine('X-Inertia'));
+    }
+
+    public function testANestedPropertyProviderSeesItsDotPath(): void
+    {
+        $key  = null;
+        $page = $this->renderPage(['auth' => ['user' => $this->propertyProvider(static function (PropertyContext $prop) use (&$key): string {
+            $key = $prop->key;
+
+            return 'Ada';
+        })]]);
+
+        $this->assertSame(['auth' => ['user' => 'Ada']], $page['props']);
+        $this->assertSame('auth.user', $key);
+    }
+
+    public function testAPropertyProviderReturnedByAClosureIsConverted(): void
+    {
+        $provider = $this->propertyProvider(static fn (PropertyContext $prop): string => 'from ' . $prop->key);
+
+        $page = $this->renderPage(['user' => static fn (): ProvidesInertiaProperty => $provider]);
+
+        $this->assertSame(['user' => 'from user'], $page['props']);
+    }
+
+    public function testAPropertyProviderUnderAKeyAPartialReloadLeavesOutIsNeverConverted(): void
+    {
+        $calls = 0;
+        $page  = $this->renderPage([
+            'user' => $this->propertyProvider(static function () use (&$calls): string {
+                $calls++;
+
+                return 'Ada';
+            }),
+            'other' => 1,
+        ], $this->partial(['X-Inertia-Partial-Data' => 'other']));
+
+        $this->assertSame(['other' => 1], $page['props']);
+        $this->assertSame(0, $calls);
+    }
+
+    public function testAPropertyProviderReturningAnArrayHasItsChildrenResolved(): void
+    {
+        $page = $this->renderPage(['user' => $this->propertyProvider(static fn (): array => [
+            'name' => static fn (): string => 'Ada',
+            'feed' => new MergeProp([1]),
+        ])]);
+
+        $this->assertSame(['user' => ['name' => 'Ada', 'feed' => [1]]], $page['props']);
+        $this->assertSame(['user.feed'], $page['mergeProps']);
+    }
+
+    public function testAPropertiesProviderAtANumericKeyIsExpandedWithTheRenderContext(): void
+    {
+        $seen = null;
+        $page = $this->renderPage([$this->propertiesProvider(static function (RenderContext $context) use (&$seen): array {
+            $seen = $context;
+
+            return ['a' => 1, 'b' => 2];
+        })]);
+
+        $this->assertSame(['a' => 1, 'b' => 2], $page['props']);
+        $this->assertInstanceOf(RenderContext::class, $seen);
+        $this->assertSame(self::COMPONENT, $seen->component);
+        $this->assertSame('true', $seen->request->getHeaderLine('X-Inertia'));
+    }
+
+    public function testAPlainKeyGivenAfterAPropertiesProviderWins(): void
+    {
+        $provider = $this->propertiesProvider(static fn (): array => ['a' => 'provided', 'b' => 2]);
+
+        $page = $this->renderPage([$provider, 'a' => 'plain']);
+
+        $this->assertSame(['a' => 'plain', 'b' => 2], $page['props']);
+    }
+
+    public function testAPropertiesProviderNestedInAnArrayPropIsExpandedAtThatLevel(): void
+    {
+        $page = $this->renderPage(['auth' => [$this->propertiesProvider(static fn (): array => ['id' => 1]), 'name' => 'Ada']]);
+
+        $this->assertSame(['auth' => ['id' => 1, 'name' => 'Ada']], $page['props']);
+    }
+
+    public function testAPropertiesProviderMayYieldFromAGenerator(): void
+    {
+        $page = $this->renderPage([$this->propertiesProvider(static function (): Generator {
+            yield 'a' => 1;
+
+            yield 'b' => 2;
+        })]);
+
+        $this->assertSame(['a' => 1, 'b' => 2], $page['props']);
+    }
+
+    public function testAPropertiesProviderAtAStringKeyIsAPlainValue(): void
+    {
+        $page = $this->renderPage(['extra' => $this->propertiesProvider(static fn (): array => ['a' => 1])]);
+
+        $this->assertSame(['extra' => []], $page['props']);
+    }
+
+    public function testAPropertiesProviderAsTheWholePropsArgumentIsExpandedLikeAListOfOne(): void
+    {
+        $config  = config(AppConfig::class);
+        $request = new IncomingRequest($config, new SiteURI($config, 'users'), null, new UserAgent());
+        $request->setHeader('X-Inertia', 'true');
+        $factory = new ResponseFactory($request, 'app', static fn (): string => 'v1');
+
+        $response = $factory
+            ->render(self::COMPONENT, $this->propertiesProvider(static fn (): array => ['a' => 1]))
+            ->toResponse($request, service('response', null, false));
+
+        $page = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame(['a' => 1], $page['props']);
+    }
+
+    public function testEveryPropertiesProviderOfALevelReceivesTheSameContext(): void
+    {
+        $contexts = [];
+        $record   = static function (RenderContext $context) use (&$contexts): array {
+            $contexts[] = $context;
+
+            return [];
+        };
+
+        $this->renderPage([$this->propertiesProvider($record), $this->propertiesProvider($record)]);
+
+        $this->assertCount(2, $contexts);
+        $this->assertSame($contexts[0], $contexts[1]);
+    }
+
+    public function testALeafClosureOfADotKeyIsNotCalledWhenTheDotKeyReplacesIt(): void
+    {
+        $calls = 0;
+        $page  = $this->renderPage([
+            'auth' => ['name' => static function () use (&$calls): string {
+                $calls++;
+
+                return 'old';
+            }],
+            'auth.name' => 'Ada',
+        ]);
+
+        $this->assertSame(['auth' => ['name' => 'Ada']], $page['props']);
+        $this->assertSame(0, $calls);
+    }
+
+    public function testAClosureBelowAnArrayOnTheDotPathIsCalledAndMerged(): void
+    {
+        $page = $this->renderPage([
+            'auth'              => ['profile' => static fn (): array => ['id' => 1]],
+            'auth.profile.name' => 'Ada',
+        ]);
+
+        $this->assertSame(['auth' => ['profile' => ['id' => 1, 'name' => 'Ada']]], $page['props']);
+    }
+
+    public function testADotKeyIsUnpackedIntoNestedProps(): void
+    {
+        $page = $this->renderPage(['auth.user.name' => 'Ada']);
+
+        $this->assertSame('{"auth":{"user":{"name":"Ada"}}}', json_encode($page['props']));
+    }
+
+    public function testADotKeyMergesIntoAnExistingArrayProp(): void
+    {
+        $page = $this->renderPage(['auth' => ['id' => 1], 'auth.name' => 'Ada']);
+
+        $this->assertSame('{"auth":{"id":1,"name":"Ada"}}', json_encode($page['props']));
+    }
+
+    public function testAClosureParentOfADotKeyIsCalledOnceAndMerged(): void
+    {
+        $calls = 0;
+        $page  = $this->renderPage([
+            'auth' => static function () use (&$calls): array {
+                $calls++;
+
+                return ['id' => 1];
+            },
+            'auth.name' => 'Ada',
+        ]);
+
+        $this->assertSame(['auth' => ['id' => 1, 'name' => 'Ada']], $page['props']);
+        $this->assertSame(1, $calls);
+    }
+
+    public function testAClosureValueOfADotKeyIsCalledAndSet(): void
+    {
+        $page = $this->renderPage(['auth.name' => static fn (): string => 'Ada']);
+
+        $this->assertSame(['auth' => ['name' => 'Ada']], $page['props']);
+    }
+
+    public function testADotKeyThroughAScalarSiblingsStringOffsetReplacesTheScalar(): void
+    {
+        $page = $this->renderPage(['auth' => 'xyz', 'auth.0.name' => 'Ada']);
+
+        $this->assertSame(['auth' => [['name' => 'Ada']]], $page['props']);
+    }
+
+    public function testADotKeyOverAScalarSiblingReplacesTheScalar(): void
+    {
+        $page = $this->renderPage(['auth' => 'x', 'auth.name' => 'Ada']);
+
+        $this->assertSame(['auth' => ['name' => 'Ada']], $page['props']);
+    }
+
+    public function testANestedDotKeyStaysALiteralKey(): void
+    {
+        $page = $this->renderPage(['auth' => ['a.b' => 1]]);
+
+        $this->assertSame(['auth' => ['a.b' => 1]], $page['props']);
+    }
+
+    public function testAPartialReloadOfADotPathSendsOnlyThatPath(): void
+    {
+        $page = $this->renderPage(
+            ['auth.name' => 'Ada', 'auth.id' => 1, 'other' => 2],
+            $this->partial(['X-Inertia-Partial-Data' => 'auth.name']),
+        );
+
+        $this->assertSame(['auth' => ['name' => 'Ada']], $page['props']);
     }
 }

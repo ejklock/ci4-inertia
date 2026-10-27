@@ -33,7 +33,7 @@ final class ResponseFactory
     private bool $sessionTouched = false;
 
     /**
-     * @var array<string, mixed>
+     * @var array<array-key, mixed>
      */
     private array $sharedProps = [];
 
@@ -69,20 +69,26 @@ final class ResponseFactory
      * Builds the page response for one component: shared props merged with this
      * render's props, the latter winning on key collision.
      *
-     * @param array<string, mixed> $props Per-render props; a closure or invokable object is
-     *                                    called only when the prop is sent.
+     * @param array<array-key, mixed>|ProvidesInertiaProperties $props Per-render props; a closure
+     *                                                                 or invokable object is called
+     *                                                                 only when the prop is sent. A
+     *                                                                 `ProvidesInertiaProperties`
+     *                                                                 stands for a list of that one.
      */
-    public function render(string $component, array $props = []): InertiaResponse
+    public function render(string $component, array|ProvidesInertiaProperties $props = []): InertiaResponse
     {
-        $merged = [...$this->sharedProps, ...$props];
+        if ($props instanceof ProvidesInertiaProperties) {
+            $props = [$props];
+        }
 
         return new InertiaResponse(
             $component,
-            $merged,
+            $props,
             $this->resolveVersion(),
             $this->rootView,
             $this->encryptHistory,
             $this->pullClearHistory(),
+            $this->sharedProps,
         );
     }
 
@@ -154,16 +160,26 @@ final class ResponseFactory
      * instance — the vehicle for cross-cutting data such as validation errors or the
      * authenticated user's display chrome.
      *
-     * @param array<string, mixed>|string $key   A single prop name, or a map of prop
-     *                                           names to values to share at once.
-     * @param mixed                       $value The value to share when `$key` is a
-     *                                           single prop name; ignored otherwise.
+     * @param array<array-key, mixed>|ProvidesInertiaProperties|string $key   A single prop name,
+     *                                                                        where a dot path nests
+     *                                                                        the value; a map of prop
+     *                                                                        names to values to share
+     *                                                                        at once; or a provider of
+     *                                                                        several props.
+     * @param mixed                                                    $value The value to share
+     *                                                                        when `$key` is a single
+     *                                                                        prop name; ignored
+     *                                                                        otherwise.
      */
-    public function share(array|string $key, mixed $value = null): void
+    public function share(array|ProvidesInertiaProperties|string $key, mixed $value = null): void
     {
-        $additions = is_array($key) ? $key : [$key => $value];
-
-        $this->sharedProps = [...$this->sharedProps, ...$additions];
+        if (is_array($key)) {
+            $this->sharedProps = [...$this->sharedProps, ...$key];
+        } elseif ($key instanceof ProvidesInertiaProperties) {
+            $this->sharedProps[] = $key;
+        } else {
+            PropsResolver::setByPath($this->sharedProps, $key, $value);
+        }
     }
 
     /**

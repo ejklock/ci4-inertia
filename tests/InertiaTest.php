@@ -12,6 +12,8 @@ use Config\App as AppConfig;
 use Config\Services;
 use Ejklock\Ci4Inertia\Inertia;
 use Ejklock\Ci4Inertia\InertiaResponse;
+use Ejklock\Ci4Inertia\ProvidesInertiaProperties;
+use Ejklock\Ci4Inertia\RenderContext;
 use Ejklock\Ci4Inertia\ResponseFactory;
 use PHPUnit\Framework\AssertionFailedError;
 use ReflectionClass;
@@ -73,6 +75,23 @@ final class InertiaTest extends CIUnitTestCase
 
         $this->assertSame('C', $page['component']);
         $this->assertSame(['a' => 'shared', 'b' => 2], $page['props']);
+    }
+
+    public function testShareTakesADotKeyAndAPropertiesProvider(): void
+    {
+        $this->injectFactory();
+
+        Inertia::share('auth.user', 'Ada');
+        Inertia::share(new class () implements ProvidesInertiaProperties {
+            public function toInertiaProperties(RenderContext $context): iterable
+            {
+                return ['locale' => 'pt'];
+            }
+        });
+        $page = $this->pageOf(Inertia::render('C'));
+
+        $this->assertSame(['auth' => ['user' => 'Ada'], 'locale' => 'pt'], $page['props']);
+        $this->assertSame(['auth', 'locale'], $page['sharedProps']);
     }
 
     public function testDeferReturnsADeferPropInTheGivenGroup(): void

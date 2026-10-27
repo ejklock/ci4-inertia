@@ -40,6 +40,13 @@ class Inertia extends BaseConfig
     public bool $storePreviousUrl = true;
 
     /**
+     * Whether each page lists the top-level keys of the props registered through
+     * `ResponseFactory::share()` under `sharedProps`, so the client can carry them over during
+     * instant visits.
+     */
+    public bool $exposeSharedPropKeys = true;
+
+    /**
      * Resolves the asset version sent on every page object. A client whose
      * `X-Inertia-Version` differs from this value is running assets from a previous deploy
      * and is forced into a hard reload rather than fed data from the new backend.

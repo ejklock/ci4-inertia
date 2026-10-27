@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Ejklock\Ci4Inertia;
 
+use Closure;
 use CodeIgniter\HTTP\IncomingRequest;
 use Ejklock\Ci4Inertia\Support\Header;
 use JsonSerializable;
@@ -60,11 +61,17 @@ final class PropsResolver
     private array $deferredProps = [];
 
     /**
-     * @param IncomingRequest $request   The current request; only its headers are read.
+     * @var list<string>
+     */
+    private array $sharedPropKeys = [];
+
+    /**
+     * @param IncomingRequest $request   The current request; its headers drive partial reloads
+     *                                   and it is handed to property providers.
      * @param string          $component The component being rendered; a partial reload counts
      *                                   only when it names this one.
      */
-    public function __construct(IncomingRequest $request, string $component)
+    public function __construct(private readonly IncomingRequest $request, private readonly string $component)
     {
         $this->isPartial  = $request->getHeaderLine(Header::PARTIAL_COMPONENT) === $component;
         $this->only       = $this->parseHeader($request, Header::PARTIAL_ONLY);
@@ -73,17 +80,152 @@ final class PropsResolver
     }
 
     /**
-     * Resolves the props and collects their metadata.
+     * Resolves the props and collects their metadata. The shared props are merged under the page
+     * props, the page props winning, and their top-level keys are collected for the page's
+     * `sharedProps` unless `Config\Inertia::$exposeSharedPropKeys` is off.
      *
-     * @param array<array-key, mixed> $props The declared props, keyed by name.
+     * @param array<array-key, mixed> $shared The shared props, as registered.
+     * @param array<array-key, mixed> $props  The declared props, keyed by name.
      *
      * @return array{0: array<array-key, mixed>, 1: array<string, mixed>} The props to send and
      *                                                                    the non-empty metadata
      *                                                                    entries of the page object.
      */
-    public function resolve(array $props): array
+    public function resolve(array $shared, array $props): array
     {
-        return [$this->resolveProps($props), $this->buildMetadata()];
+        $props = array_replace($this->resolveSharedProps($shared), $props);
+
+        return [$this->resolveProps($this->unpackDotProps($props)), $this->buildMetadata()];
+    }
+
+    /**
+     * Writes a value at a dot path the way Laravel's `Arr::set` does: a missing or non-array
+     * segment is replaced by an empty array on the way down.
+     *
+     * @param array<array-key, mixed> $array
+     *
+     * @internal Shared with `ResponseFactory::share()`; not a public contract.
+     */
+    public static function setByPath(array &$array, string $path, mixed $value): void
+    {
+        $segments = explode('.', $path);
+        $last     = array_pop($segments);
+        $current  = &$array;
+
+        foreach ($segments as $segment) {
+            if (! isset($current[$segment]) || ! is_array($current[$segment])) {
+                $current[$segment] = [];
+            }
+
+            $current = &$current[$segment];
+        }
+
+        $current[$last] = $value;
+    }
+
+    /**
+     * Expands the property providers of the shared props and records which top-level keys
+     * they carry.
+     *
+     * @param array<array-key, mixed> $shared
+     *
+     * @return array<string, mixed>
+     */
+    private function resolveSharedProps(array $shared): array
+    {
+        $resolved = $this->resolvePropertyProviders($shared);
+
+        if (! config('Inertia')->exposeSharedPropKeys) {
+            return $resolved;
+        }
+
+        foreach (array_keys($resolved) as $key) {
+            $this->sharedPropKeys[] = explode('.', (string) $key)[0];
+        }
+
+        $this->sharedPropKeys = array_values(array_unique($this->sharedPropKeys));
+
+        return $resolved;
+    }
+
+    /**
+     * Replaces each `ProvidesInertiaProperties` at a numeric key by the keyed props it
+     * provides, in place; the keys given after it win.
+     *
+     * @param array<array-key, mixed> $props
+     *
+     * @return array<string, mixed>
+     */
+    private function resolvePropertyProviders(array $props): array
+    {
+        $context = null;
+        $result  = [];
+
+        foreach ($props as $key => $value) {
+            if (is_int($key) && $value instanceof ProvidesInertiaProperties) {
+                $context ??= new RenderContext($this->component, $this->request);
+
+                $result = [...$result, ...iterator_to_array($value->toInertiaProperties($context))];
+            } else {
+                $result[$key] = $value;
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Unpacks the top-level dot-notation keys into nested arrays; a closure value, and a
+     * closure standing at a segment the path crosses, is called first.
+     *
+     * @param array<array-key, mixed> $props
+     *
+     * @return array<array-key, mixed>
+     */
+    private function unpackDotProps(array $props): array
+    {
+        foreach ($props as $key => $value) {
+            if (! is_string($key) || ! str_contains($key, '.')) {
+                continue;
+            }
+
+            if ($value instanceof Closure) {
+                $value = $value();
+            }
+
+            $this->callClosuresAlongPath($props, $key);
+            self::setByPath($props, $key, $value);
+            unset($props[$key]);
+        }
+
+        return $props;
+    }
+
+    /**
+     * @param array<array-key, mixed> $props
+     */
+    private function callClosuresAlongPath(array &$props, string $dotKey): void
+    {
+        $segments = explode('.', $dotKey);
+        array_pop($segments);
+
+        $current = &$props;
+
+        foreach ($segments as $segment) {
+            if (! isset($current[$segment])) {
+                return;
+            }
+
+            if ($current[$segment] instanceof Closure) {
+                $current[$segment] = $current[$segment]();
+            }
+
+            if (! is_array($current[$segment])) {
+                return;
+            }
+
+            $current = &$current[$segment];
+        }
     }
 
     /**
@@ -92,6 +234,7 @@ final class PropsResolver
     private function buildMetadata(): array
     {
         $metadata = array_filter([
+            'sharedProps'    => $this->sharedPropKeys,
             'mergeProps'     => $this->mergeProps,
             'prependProps'   => $this->prependProps,
             'deepMergeProps' => $this->deepMergeProps,
@@ -116,6 +259,7 @@ final class PropsResolver
      */
     private function resolveProps(array $props, string $prefix = '', bool $parentWasResolved = false): array
     {
+        $props  = $this->resolvePropertyProviders($props);
         $result = [];
 
         foreach ($props as $key => $value) {
@@ -134,7 +278,7 @@ final class PropsResolver
                 continue;
             }
 
-            $value = $this->resolveValue($prop);
+            $value = $this->resolveValue($prop, $path, $props);
 
             // A closure may return a prop type; it is unwrapped one level so that type takes part
             // in the filtering and the metadata below.
@@ -145,7 +289,7 @@ final class PropsResolver
                     continue;
                 }
 
-                $value = $this->resolveValue($prop);
+                $value = $this->resolveValue($prop, $path, $props);
             }
 
             $this->collectMetadata($prop, $path);
@@ -207,14 +351,20 @@ final class PropsResolver
     }
 
     /**
-     * Calls a callable object, then turns the result into plain data: a `JsonSerializable`
-     * becomes its `jsonSerialize()` value. A string or array that merely names a function stays
-     * as it is.
+     * Calls a callable object, converts a `ProvidesInertiaProperty` with its context, then turns
+     * the result into plain data: a `JsonSerializable` becomes its `jsonSerialize()` value. A
+     * string or array that merely names a function stays as it is.
+     *
+     * @param array<array-key, mixed> $siblings The props at the same level.
      */
-    private function resolveValue(mixed $value): mixed
+    private function resolveValue(mixed $value, string $path, array $siblings): mixed
     {
         if (is_object($value) && is_callable($value)) {
             $value = $value();
+        }
+
+        if ($value instanceof ProvidesInertiaProperty) {
+            $value = $value->toInertiaProperty(new PropertyContext($path, $siblings, $this->request));
         }
 
         return $value instanceof JsonSerializable ? $value->jsonSerialize() : $value;

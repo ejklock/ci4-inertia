@@ -20,12 +20,15 @@ final class Inertia
     }
 
     /**
-     * @param array<string, mixed> $props Per-render props; a closure or invokable object is
-     *                                    called only when the prop is sent.
+     * @param array<array-key, mixed>|ProvidesInertiaProperties $props Per-render props; a closure
+     *                                                                 or invokable object is called
+     *                                                                 only when the prop is sent. A
+     *                                                                 `ProvidesInertiaProperties`
+     *                                                                 stands for a list of that one.
      *
      * @see ResponseFactory::render()
      */
-    public static function render(string $component, array $props = []): InertiaResponse
+    public static function render(string $component, array|ProvidesInertiaProperties $props = []): InertiaResponse
     {
         return self::factory()->render($component, $props);
     }
@@ -83,14 +86,20 @@ final class Inertia
     }
 
     /**
-     * @param array<string, mixed>|string $key   A single prop name, or a map of prop
-     *                                           names to values to share at once.
-     * @param mixed                       $value The value to share when `$key` is a
-     *                                           single prop name; ignored otherwise.
+     * @param array<array-key, mixed>|ProvidesInertiaProperties|string $key   A single prop name,
+     *                                                                        where a dot path nests
+     *                                                                        the value; a map of
+     *                                                                        prop names to values;
+     *                                                                        or a provider of
+     *                                                                        several props.
+     * @param mixed                                                    $value The value to share
+     *                                                                        when `$key` is a
+     *                                                                        single prop name;
+     *                                                                        ignored otherwise.
      *
      * @see ResponseFactory::share()
      */
-    public static function share(array|string $key, mixed $value = null): void
+    public static function share(array|ProvidesInertiaProperties|string $key, mixed $value = null): void
     {
         self::factory()->share($key, $value);
     }

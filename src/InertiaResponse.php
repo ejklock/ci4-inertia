@@ -18,26 +18,30 @@ use Ejklock\Ci4Inertia\Support\Header;
 final readonly class InertiaResponse
 {
     /**
-     * @param string               $component      The client-side component name Inertia
-     *                                             mounts, e.g. `Users/Index`.
-     * @param array<string, mixed> $props          The declared props, keyed by name. A value
-     *                                             may be a closure or an invokable object, called
-     *                                             only when the prop is sent; an `OptionalProp`
-     *                                             to leave it out of a full render, a `DeferProp`
-     *                                             to leave it out of a full render and have the
-     *                                             client fetch it afterwards, a `MergeProp` to
-     *                                             have the client combine it with its current
-     *                                             value, or an `AlwaysProp` to bypass partial
-     *                                             reload filtering; any other value is sent as-is.
-     * @param string               $version        The asset version echoed on the page object,
-     *                                             compared by the client against the version
-     *                                             it booted with to detect stale assets.
-     * @param string               $rootView       The root view rendered for a non-Inertia
-     *                                             visit.
-     * @param bool                 $encryptHistory Whether the page object asks the client to
-     *                                             encrypt this page's history state.
-     * @param bool                 $clearHistory   Whether the page object asks the client to
-     *                                             discard its encrypted history by rotating the key.
+     * @param string                  $component      The client-side component name Inertia
+     *                                                mounts, e.g. `Users/Index`.
+     * @param array<string, mixed>    $props          The declared props, keyed by name. A value
+     *                                                may be a closure or an invokable object, called
+     *                                                only when the prop is sent; an `OptionalProp`
+     *                                                to leave it out of a full render, a `DeferProp`
+     *                                                to leave it out of a full render and have the
+     *                                                client fetch it afterwards, a `MergeProp` to
+     *                                                have the client combine it with its current
+     *                                                value, or an `AlwaysProp` to bypass partial
+     *                                                reload filtering; any other value is sent as-is.
+     * @param string                  $version        The asset version echoed on the page object,
+     *                                                compared by the client against the version
+     *                                                it booted with to detect stale assets.
+     * @param string                  $rootView       The root view rendered for a non-Inertia
+     *                                                visit.
+     * @param bool                    $encryptHistory Whether the page object asks the client to
+     *                                                encrypt this page's history state.
+     * @param bool                    $clearHistory   Whether the page object asks the client to
+     *                                                discard its encrypted history by rotating the key.
+     * @param array<array-key, mixed> $sharedProps    The shared props, kept apart from the page
+     *                                                props so the page can list their top-level keys
+     *                                                under `sharedProps`; a page prop with the same
+     *                                                key wins.
      */
     public function __construct(
         private string $component,
@@ -46,6 +50,7 @@ final readonly class InertiaResponse
         private string $rootView,
         private bool $encryptHistory = false,
         private bool $clearHistory = false,
+        private array $sharedProps = [],
     ) {
     }
 
@@ -73,15 +78,15 @@ final readonly class InertiaResponse
 
     /**
      * Assembles the page object: the keys `component`, `props`, `url` and `version`, then the
-     * metadata the props resolver collected (`deferredProps`, `mergeProps`, `prependProps`,
-     * `deepMergeProps`, `matchPropsOn`) when it is not empty, then `encryptHistory` and
+     * metadata the props resolver collected (`sharedProps`, `mergeProps`, `prependProps`,
+     * `deepMergeProps`, `matchPropsOn`, `deferredProps`) when it is not empty, then `encryptHistory` and
      * `clearHistory` when each holds — the shape both `asJson()` and `asHtml()` serialize verbatim.
      *
      * @return array<string, mixed>
      */
     private function buildPageObject(IncomingRequest $request): array
     {
-        [$props, $metadata] = (new PropsResolver($request, $this->component))->resolve($this->props);
+        [$props, $metadata] = (new PropsResolver($request, $this->component))->resolve($this->sharedProps, $this->props);
 
         $page = [
             'component' => $this->component,

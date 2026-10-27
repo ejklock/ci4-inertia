@@ -65,6 +65,16 @@ final class InertiaResponseTest extends CIUnitTestCase
         return json_decode($matches[1], true, flags: JSON_THROW_ON_ERROR);
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    private function pageOf(InertiaResponse $inertia): array
+    {
+        $response = $inertia->toResponse($this->makeRequest('users', ['X-Inertia' => 'true']), $this->makeResponse());
+
+        return json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+    }
+
     public function testNonInertiaRequestRendersHtmlShellWithDataPageKeys(): void
     {
         $inertia = new InertiaResponse('Users/Index', ['users' => ['a', 'b']], 'v1', self::SHELL_VIEW);
@@ -906,6 +916,32 @@ final class InertiaResponseTest extends CIUnitTestCase
 
         $this->assertTrue($page['encryptHistory']);
         $this->assertTrue($page['clearHistory']);
+    }
+
+    public function testWithoutSharedPropsThePageHasNoSharedPropsKey(): void
+    {
+        $page = $this->pageOf(new InertiaResponse('Users/Index', ['a' => 1], 'v1', self::SHELL_VIEW));
+
+        $this->assertArrayNotHasKey('sharedProps', $page);
+        $this->assertSame(['a' => 1], $page['props']);
+    }
+
+    public function testSharedPropsAreMergedUnderThePagePropsAndListedByTopLevelKey(): void
+    {
+        $inertia = new InertiaResponse(
+            'Users/Index',
+            ['b' => 2, 'a' => 'page'],
+            'v1',
+            self::SHELL_VIEW,
+            false,
+            false,
+            ['a' => 'shared', 'auth' => ['id' => 1]],
+        );
+
+        $page = $this->pageOf($inertia);
+
+        $this->assertSame(['a' => 'page', 'auth' => ['id' => 1], 'b' => 2], $page['props']);
+        $this->assertSame(['a', 'auth'], $page['sharedProps']);
     }
 
     public function testHistoryFlagsAreInTheHtmlShellDataPage(): void

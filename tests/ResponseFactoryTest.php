@@ -13,6 +13,8 @@ use CodeIgniter\Test\CIUnitTestCase;
 use Config\App as AppConfig;
 use Config\Services;
 use Ejklock\Ci4Inertia\Config\Inertia as InertiaConfig;
+use Ejklock\Ci4Inertia\ProvidesInertiaProperties;
+use Ejklock\Ci4Inertia\RenderContext;
 use Ejklock\Ci4Inertia\ResponseFactory;
 use PHPUnit\Framework\Assert;
 use stdClass;
@@ -262,6 +264,137 @@ final class ResponseFactoryTest extends CIUnitTestCase
         $config = new InertiaConfig();
 
         $this->assertSame('app', $config->rootView);
+    }
+
+    public function testSharedPropKeysAreExposedByDefault(): void
+    {
+        $this->assertTrue((new InertiaConfig())->exposeSharedPropKeys);
+    }
+
+    public function testSharingADotKeyNestsItAndListsItsTopLevelKey(): void
+    {
+        $factory = $this->newFactory();
+
+        $factory->share('auth.user', 'Ada');
+        $page = $this->renderPageObject($factory, 'Users/Index');
+
+        $this->assertSame('{"auth":{"user":"Ada"}}', json_encode($page['props']));
+        $this->assertSame(['auth'], $page['sharedProps']);
+    }
+
+    public function testSharingDotKeysIntoTheSameParentKeepsBoth(): void
+    {
+        $factory = $this->newFactory();
+
+        $factory->share('auth.user', 'Ada');
+        $factory->share('auth.role', 'admin');
+        $page = $this->renderPageObject($factory, 'Users/Index');
+
+        $this->assertSame(['auth' => ['user' => 'Ada', 'role' => 'admin']], $page['props']);
+        $this->assertSame(['auth'], $page['sharedProps']);
+    }
+
+    public function testSharingADotKeyOverAScalarReplacesTheScalar(): void
+    {
+        $factory = $this->newFactory();
+
+        $factory->share('auth', 'x');
+        $factory->share('auth.user', 'Ada');
+
+        $this->assertSame(['auth' => ['user' => 'Ada']], $this->renderPageObject($factory, 'Users/Index')['props']);
+    }
+
+    public function testSharedKeysAreListedInShareOrder(): void
+    {
+        $factory = $this->newFactory();
+
+        $factory->share(['flash' => 1, 'app' => 2]);
+        $page = $this->renderPageObject($factory, 'Users/Index');
+
+        $this->assertSame(['flash', 'app'], $page['sharedProps']);
+    }
+
+    public function testASharedPropertiesProviderListsTheKeysItProvides(): void
+    {
+        $factory = $this->newFactory();
+
+        $factory->share(new class () implements ProvidesInertiaProperties {
+            public function toInertiaProperties(RenderContext $context): iterable
+            {
+                return ['locale' => 'pt', 'menu' => [1]];
+            }
+        });
+        $page = $this->renderPageObject($factory, 'Users/Index');
+
+        $this->assertSame(['locale' => 'pt', 'menu' => [1]], $page['props']);
+        $this->assertSame(['locale', 'menu'], $page['sharedProps']);
+    }
+
+    public function testAPagePropWithASharedKeyWinsAndTheKeyIsListedOnce(): void
+    {
+        $factory = $this->newFactory();
+
+        $factory->share('flash', 'shared');
+        $page = $this->renderPageObject($factory, 'Users/Index', ['flash' => 'page']);
+
+        $this->assertSame(['flash' => 'page'], $page['props']);
+        $this->assertSame(['flash'], $page['sharedProps']);
+    }
+
+    public function testNoSharedPropsMeansNoSharedPropsKey(): void
+    {
+        $page = $this->renderPageObject($this->newFactory(), 'Users/Index', ['a' => 1]);
+
+        $this->assertArrayNotHasKey('sharedProps', $page);
+    }
+
+    public function testTurningSharedPropKeysOffOmitsThemAndKeepsTheProps(): void
+    {
+        $config = config('Inertia');
+        $before = $config->exposeSharedPropKeys;
+
+        try {
+            $config->exposeSharedPropKeys = false;
+            $factory                      = $this->newFactory();
+            $factory->share(['flash' => 1, 'app' => 3]);
+            $page = $this->renderPageObject($factory, 'Users/Index', ['a' => 2]);
+        } finally {
+            $config->exposeSharedPropKeys = $before;
+        }
+
+        $this->assertArrayNotHasKey('sharedProps', $page);
+        $this->assertSame(['flash' => 1, 'app' => 3, 'a' => 2], $page['props']);
+    }
+
+    public function testSharedDotKeysUnderOneParentListThatParentOnceAndTheListStaysAList(): void
+    {
+        $factory = $this->newFactory();
+
+        $factory->share(['auth.id' => 1, 'auth.name' => 'Ada', 'flash' => 2]);
+        $page = $this->renderPageObject($factory, 'Users/Index');
+
+        $this->assertSame(['flash' => 2, 'auth' => ['id' => 1, 'name' => 'Ada']], $page['props']);
+        $this->assertSame(['auth', 'flash'], $page['sharedProps']);
+    }
+
+    public function testSharingAfterAnArrayShareKeepsEarlierSharedProps(): void
+    {
+        $factory = $this->newFactory();
+
+        $factory->share('a', 1);
+        $factory->share(['b' => 2]);
+
+        $this->assertSame(['a' => 1, 'b' => 2], $this->renderPageObject($factory, 'Users/Index')['props']);
+    }
+
+    public function testSharedPropKeysComeRightAfterTheVersion(): void
+    {
+        $factory = $this->newFactory();
+
+        $factory->share('flash', 1);
+        $page = $this->renderPageObject($factory, 'Users/Index', ['feed' => $factory->merge([1])]);
+
+        $this->assertSame(['component', 'props', 'url', 'version', 'sharedProps', 'mergeProps'], array_keys($page));
     }
 
     public function testTheInertiaServiceBuildsTheFactoryFromTheConfiguredVersion(): void
