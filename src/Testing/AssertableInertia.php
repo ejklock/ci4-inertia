@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Ejklock\Ci4Inertia\Testing;
 
 use Closure;
+use Ejklock\Ci4Inertia\Support\Header;
 use PHPUnit\Framework\Assert;
 
 /**
@@ -13,15 +14,21 @@ use PHPUnit\Framework\Assert;
  *
  * Paths are walked with `array_key_exists`, so a prop whose value is `null` counts as
  * present. Keys of the page beyond the required four are kept and readable through `page()`.
+ *
+ * A page built by `InertiaTestTrait` also carries a request handle, so `reload()`,
+ * `reloadOnly()`, `reloadExcept()` and `loadDeferredProps()` can follow the page with a partial
+ * reload. A page built by `fromPage()` alone has none and fails those assertions.
  */
 final readonly class AssertableInertia
 {
     private const REQUIRED_KEYS = ['component', 'props', 'url', 'version'];
 
     /**
-     * @param array<string, mixed> $page
+     * @param array<string, mixed>                                                $page
+     * @param (Closure(string, array<string, string>): array<string, mixed>)|null $reloader requests a url with the given
+     *                                                                                      headers and returns the page it answered with
      */
-    private function __construct(private array $page)
+    private function __construct(private array $page, private ?Closure $reloader)
     {
     }
 
@@ -29,6 +36,21 @@ final readonly class AssertableInertia
      * @param array<string, mixed> $page
      */
     public static function fromPage(array $page): self
+    {
+        return self::fromPageWithReloader($page, null);
+    }
+
+    /**
+     * Builds the assertable with the handle `reload()` requests the page through; `InertiaTestTrait`
+     * is its only caller. Without a handle, `reload()` fails.
+     *
+     * @internal
+     *
+     * @param array<string, mixed>                                                $page
+     * @param (Closure(string, array<string, string>): array<string, mixed>)|null $reloader requests a url with the given
+     *                                                                                      headers and returns the page it answered with
+     */
+    public static function fromPageWithReloader(array $page, ?Closure $reloader): self
     {
         foreach (self::REQUIRED_KEYS as $key) {
             if (! array_key_exists($key, $page)) {
@@ -40,7 +62,7 @@ final readonly class AssertableInertia
             Assert::fail('The Inertia page key [props] is not an array.');
         }
 
-        return new self($page);
+        return new self($page, $reloader);
     }
 
     /**
@@ -105,6 +127,136 @@ final readonly class AssertableInertia
         return $this;
     }
 
+    /**
+     * Asserts every path is present.
+     */
+    public function hasAll(array|string ...$paths): static
+    {
+        foreach ($this->flatten($paths) as $path) {
+            $this->prop($path);
+        }
+
+        return $this;
+    }
+
+    /**
+     * Asserts every path is absent.
+     */
+    public function missingAll(array|string ...$paths): static
+    {
+        foreach ($this->flatten($paths) as $path) {
+            $this->missing($path);
+        }
+
+        return $this;
+    }
+
+    /**
+     * Loads the page's deferred props with one partial reload and hands the reloaded page to
+     * `$callback`. A closure alone loads every deferred group; a group name or a list of them
+     * loads those. Fails when the chosen groups hold no key, rather than reloading the whole page.
+     *
+     * @param array<int, string>|Closure|string $groupsOrCallback
+     */
+    public function loadDeferredProps(array|Closure|string $groupsOrCallback, ?Closure $callback = null): static
+    {
+        $callback ??= $groupsOrCallback instanceof Closure ? $groupsOrCallback : null;
+        $deferred = $this->page['deferredProps'] ?? [];
+        /** @var array<string, list<string>> $deferred the page object's group name to keys map */
+        $deferred = is_array($deferred) ? $deferred : [];
+        $groups   = $groupsOrCallback instanceof Closure ? array_keys($deferred) : (array) $groupsOrCallback;
+
+        $keys = [];
+
+        foreach ($groups as $group) {
+            $keys = [...$keys, ...$deferred[$group] ?? []];
+        }
+
+        if ($keys === []) {
+            Assert::fail(sprintf('The Inertia page has no deferred props to load for the group(s) [%s].', implode(', ', $groups)));
+        }
+
+        return $this->reloadOnly($keys, $callback);
+    }
+
+    /**
+     * Requests the page again with the version header (and the partial headers when `$only` or
+     * `$except` is given), asserts the reloaded page has the same component, url and version, and
+     * hands it to `$callback`. Returns this page, not the reloaded one.
+     *
+     * @param array<int, string>|string|null $only
+     * @param array<int, string>|string|null $except
+     */
+    public function reload(?Closure $callback = null, array|string|null $only = null, array|string|null $except = null): static
+    {
+        if (! $this->reloader instanceof Closure) {
+            Assert::fail('Reloading an Inertia page needs a test case that uses both FeatureTestTrait and InertiaTestTrait, and a page read through assertInertia().');
+        }
+
+        $only   = is_array($only) ? implode(',', $only) : $only;
+        $except = is_array($except) ? implode(',', $except) : $except;
+
+        $component = (string) $this->page['component'];
+        $url       = (string) $this->page['url'];
+        $version   = (string) $this->page['version'];
+
+        $headers = [Header::VERSION => $version];
+
+        if ($only !== null && $only !== '') {
+            $headers[Header::PARTIAL_COMPONENT] = $component;
+            $headers[Header::PARTIAL_ONLY]      = $only;
+        }
+
+        if ($except !== null && $except !== '') {
+            $headers[Header::PARTIAL_COMPONENT] = $component;
+            $headers[Header::PARTIAL_EXCEPT]    = $except;
+        }
+
+        $reloaded = self::fromPageWithReloader(($this->reloader)($url, $headers), $this->reloader);
+
+        $reloaded->component($component);
+        $reloaded->url($url);
+        $reloaded->version($version);
+
+        if ($callback instanceof Closure) {
+            $callback($reloaded);
+        }
+
+        return $this;
+    }
+
+    /**
+     * Reloads the page asking for only these props and asserts each one came back.
+     *
+     * @param array<int, string>|string $only
+     */
+    public function reloadOnly(array|string $only, ?Closure $callback = null): static
+    {
+        return $this->reload(static function (self $reloaded) use ($only, $callback): void {
+            $reloaded->hasAll(...self::split($only));
+
+            if ($callback instanceof Closure) {
+                $callback($reloaded);
+            }
+        }, only: $only);
+    }
+
+    /**
+     * Reloads the page asking for everything except these props and asserts each one is gone.
+     *
+     * @param array<int, string>|string $except
+     */
+    public function reloadExcept(array|string $except, ?Closure $callback = null): static
+    {
+        return $this->reload(static function (self $reloaded) use ($except, $callback): void {
+            $reloaded->missingAll(...self::split($except));
+
+            if ($callback instanceof Closure) {
+                $callback($reloaded);
+            }
+        }, except: $except);
+    }
+
     public function where(string $path, mixed $expected): static
     {
         $actual = $this->prop($path);
@@ -125,6 +277,26 @@ final readonly class AssertableInertia
         $this->assertCount($path, $this->prop($path), $expected);
 
         return $this;
+    }
+
+    /**
+     * @param array<int, string>|string $paths a comma separated list or a list of paths
+     *
+     * @return list<string>
+     */
+    private static function split(array|string $paths): array
+    {
+        return is_array($paths) ? $paths : explode(',', $paths);
+    }
+
+    /**
+     * @param array<int, array<int, string>|string> $paths
+     *
+     * @return list<string>
+     */
+    private function flatten(array $paths): array
+    {
+        return array_merge(...array_map(static fn (array|string $path): array => (array) $path, $paths));
     }
 
     private function assertPageKey(string $key, string $expected): void

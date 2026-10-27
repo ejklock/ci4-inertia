@@ -9,6 +9,7 @@ use CodeIgniter\Test\CIUnitTestCase;
 use Ejklock\Ci4Inertia\Testing\AssertableInertia;
 use PHPUnit\Framework\AssertionFailedError;
 use PHPUnit\Framework\Attributes\DataProvider;
+use ReflectionMethod;
 
 /**
  * Verifies `AssertableInertia`: page-level assertions, dot-path presence and value
@@ -279,5 +280,88 @@ final class AssertableInertiaTest extends CIUnitTestCase
         }
 
         $this->assertFalse($reached);
+    }
+
+    public function testHasAllAcceptsAListOrVariadicPaths(): void
+    {
+        $this->assertPasses(static fn (AssertableInertia $page): AssertableInertia => $page->hasAll(['title', 'users.0.name']));
+        $this->assertPasses(static fn (AssertableInertia $page): AssertableInertia => $page->hasAll('title', 'users.1.name'));
+    }
+
+    public function testHasAllFailsNamingTheFirstMissingPath(): void
+    {
+        $this->expectFailure('[nope.first]');
+
+        $this->assertable()->hasAll(['title', 'nope.first', 'nope.second']);
+    }
+
+    public function testMissingAllAcceptsAListOrVariadicPaths(): void
+    {
+        $this->assertPasses(static fn (AssertableInertia $page): AssertableInertia => $page->missingAll(['absent', 'users.5']));
+        $this->assertPasses(static fn (AssertableInertia $page): AssertableInertia => $page->missingAll('absent', 'users.5.name'));
+    }
+
+    public function testMissingAllFailsNamingTheFirstPresentPath(): void
+    {
+        $this->expectFailure('[count]');
+
+        $this->assertable()->missingAll(['absent', 'count', 'title']);
+    }
+
+    public function testReloadWithoutARequestHandleFailsSayingFeatureTestTraitIsRequired(): void
+    {
+        $this->expectFailure('FeatureTestTrait');
+
+        $this->assertable()->reload();
+    }
+
+    /**
+     * @param array<string, mixed> $override
+     */
+    private function reloadingPage(array $override): AssertableInertia
+    {
+        $reloaded = $override + $this->page();
+
+        return AssertableInertia::fromPageWithReloader($this->page(), static fn (): array => $reloaded);
+    }
+
+    public function testFromPageTakesOnlyThePage(): void
+    {
+        $this->assertSame(1, (new ReflectionMethod(AssertableInertia::class, 'fromPage'))->getNumberOfParameters());
+    }
+
+    public function testReloadFailsNamingTheUrlWhenTheReloadedPageHasAnotherUrl(): void
+    {
+        $this->expectFailure('/elsewhere');
+
+        $this->reloadingPage(['url' => '/elsewhere'])->reload();
+    }
+
+    public function testReloadFailsNamingTheVersionWhenTheReloadedPageHasAnotherVersion(): void
+    {
+        $this->expectFailure('v2');
+
+        $this->reloadingPage(['version' => 'v2'])->reload();
+    }
+
+    public function testReloadRequestsThePageUrlWithTheVersionAsAString(): void
+    {
+        $seen = [];
+        $page = AssertableInertia::fromPageWithReloader(['version' => 7] + $this->page(), static function (string $url, array $headers) use (&$seen): array {
+            $seen = [$url, $headers];
+
+            return ['version' => '7'] + ['component' => 'Users/Index', 'props' => [], 'url' => '/users'];
+        });
+
+        $page->reload(only: 'title');
+
+        $this->assertSame(['/users', ['X-Inertia-Version' => '7', 'X-Inertia-Partial-Component' => 'Users/Index', 'X-Inertia-Partial-Data' => 'title']], $seen);
+    }
+
+    public function testLoadDeferredPropsWithNothingToLoadFailsInsteadOfReloadingEverything(): void
+    {
+        $this->expectFailure('deferred');
+
+        $this->assertable()->loadDeferredProps(static fn (AssertableInertia $page): null => null);
     }
 }

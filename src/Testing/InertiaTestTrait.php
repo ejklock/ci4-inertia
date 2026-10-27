@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace Ejklock\Ci4Inertia\Testing;
 
 use Closure;
+use CodeIgniter\Test\FeatureTestTrait;
 use CodeIgniter\Test\TestResponse;
 use DOMDocument;
 use DOMElement;
 use DOMXPath;
+use Ejklock\Ci4Inertia\Support\Header;
 use JsonException;
 use PHPUnit\Framework\Assert;
 
@@ -16,13 +18,43 @@ use PHPUnit\Framework\Assert;
  * For a test case: assert on the Inertia page a response carried, whether the Inertia JSON
  * (`X-Inertia: true`) or the HTML first-visit shell holding the page in a
  * `<script data-page type="application/json">` element.
+ *
+ * Following a page with `reload()` also needs the test case to use `FeatureTestTrait`, whose
+ * request methods the reload goes through.
+ *
+ * @property array<string, list<string>|string> $headers
+ *
+ * @method TestResponse get(string $path, ?array<array-key, mixed> $params = null)
+ * @method static       withHeaders(array<string, list<string>|string> $headers = [])
  */
 trait InertiaTestTrait
 {
     /**
+     * Lower-cased names of the headers that make a request a partial reload; a reload never
+     * inherits them from an earlier visit.
+     */
+    private const PARTIAL_HEADERS = ['x-inertia-partial-component', 'x-inertia-partial-data', 'x-inertia-partial-except', 'x-inertia-reset'];
+
+    /**
      * @param (Closure(AssertableInertia): mixed)|null $callback
      */
     protected function assertInertia(TestResponse $result, ?Closure $callback = null): AssertableInertia
+    {
+        $assertable = AssertableInertia::fromPageWithReloader($this->inertiaPage($result), $this->inertiaReloader());
+
+        if ($callback instanceof Closure) {
+            $callback($assertable);
+        }
+
+        return $assertable;
+    }
+
+    /**
+     * The decoded page object of a response, from the Inertia JSON or the HTML first-visit shell.
+     *
+     * @return array<string, mixed>
+     */
+    protected function inertiaPage(TestResponse $result): array
     {
         $body = (string) $result->response()->getBody();
 
@@ -30,13 +62,18 @@ trait InertiaTestTrait
             ? $body
             : $this->inertiaPageJsonFromHtml($body);
 
-        $assertable = AssertableInertia::fromPage($this->decodeInertiaPage($json));
+        return $this->decodeInertiaPage($json);
+    }
 
-        if ($callback instanceof Closure) {
-            $callback($assertable);
-        }
+    /**
+     * One prop of the page a response carried (a dot path reaches a nested value), or every
+     * prop when no key is given. A missing key fails the test.
+     */
+    protected function inertiaProp(TestResponse $result, ?string $key = null): mixed
+    {
+        $page = AssertableInertia::fromPage($this->inertiaPage($result));
 
-        return $assertable;
+        return $key === null ? $page->page()['props'] : $page->prop($key);
     }
 
     /**
@@ -49,6 +86,40 @@ trait InertiaTestTrait
     protected function inertiaHeaders(string $version = '', array $extra = []): array
     {
         return ['X-Inertia' => 'true', 'X-Inertia-Version' => $version] + $extra;
+    }
+
+    /**
+     * The request handle `AssertableInertia` reloads through, or null when the test case has no
+     * FeatureTestTrait to issue a request with. The reload is a fresh request: it sends the headers
+     * the test had set except the partial-reload ones of an earlier visit, overlaid with the
+     * reload's own, and puts the test's headers back afterwards, even when the request throws.
+     *
+     * @return (Closure(string, array<string, string>): array<string, mixed>)|null
+     *
+     * @psalm-suppress UndefinedMethod get() and withHeaders() come from FeatureTestTrait, whose presence is checked at runtime
+     */
+    private function inertiaReloader(): ?Closure
+    {
+        if (! in_array(FeatureTestTrait::class, class_uses_recursive($this), true)) {
+            return null;
+        }
+
+        return function (string $url, array $headers): array {
+            $previous = $this->headers;
+            $kept     = array_filter(
+                $previous,
+                static fn (string $name): bool => ! in_array(strtolower($name), self::PARTIAL_HEADERS, true),
+                ARRAY_FILTER_USE_KEY,
+            );
+
+            try {
+                $this->withHeaders([...$kept, Header::INERTIA => 'true', ...$headers]);
+
+                return $this->inertiaPage($this->get($url));
+            } finally {
+                $this->withHeaders($previous);
+            }
+        };
     }
 
     private function inertiaPageJsonFromHtml(string $html): string

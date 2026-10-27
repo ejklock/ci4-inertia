@@ -245,4 +245,79 @@ final class InertiaTestTraitTest extends CIUnitTestCase
 
         $this->assertSame(['X-Inertia' => 'true', 'X-Inertia-Version' => 'v1'], $headers);
     }
+
+    public function testInertiaPageReturnsThePageFromJsonAndFromHtml(): void
+    {
+        foreach ([true, false] as $asJson) {
+            $page = $this->inertiaPage($this->inertiaResult($asJson));
+
+            $this->assertSame('Users/Index', $page['component']);
+            $this->assertSame('/users', $page['url']);
+            $this->assertSame('v1', $page['version']);
+            $this->assertSame('Users', $page['props']['title']);
+        }
+    }
+
+    public function testInertiaPropWithoutAKeyReturnsAllProps(): void
+    {
+        $this->assertSame(
+            ['title' => 'Users', 'users' => [['name' => 'Ada']]],
+            $this->inertiaProp($this->inertiaResult(true)),
+        );
+    }
+
+    public function testInertiaPropResolvesADotPath(): void
+    {
+        $this->assertSame('Ada', $this->inertiaProp($this->inertiaResult(false), 'users.0.name'));
+    }
+
+    public function testInertiaPropOfAMissingKeyFailsTheTest(): void
+    {
+        $this->expectException(AssertionFailedError::class);
+        $this->expectExceptionMessage('nope');
+
+        $this->inertiaProp($this->inertiaResult(true), 'nope');
+    }
+
+    /**
+     * @psalm-suppress InternalMethod a throwaway test case needs PHPUnit's name argument
+     */
+    public function testAGetMethodOfTheTestCaseDoesNotStandInForFeatureTestTrait(): void
+    {
+        $testCase = new class ('probe') extends CIUnitTestCase {
+            use InertiaTestTrait;
+
+            public int $getCalls = 0;
+
+            public function get(string $path): TestResponse
+            {
+                $this->getCalls++;
+
+                return new TestResponse(service('response', null, false));
+            }
+
+            public function read(TestResponse $result): AssertableInertia
+            {
+                return $this->assertInertia($result);
+            }
+        };
+        $page = $testCase->read($this->inertiaResult(true));
+
+        try {
+            $page->reload();
+            $this->fail('the reload should have failed');
+        } catch (AssertionFailedError $e) {
+            $this->assertStringContainsString('FeatureTestTrait', $e->getMessage());
+        }
+
+        $this->assertSame(0, $testCase->getCalls);
+    }
+
+    public function testReloadWithoutFeatureTestTraitFailsSayingItIsRequired(): void
+    {
+        $this->expectException(AssertionFailedError::class);
+        $this->expectExceptionMessage('FeatureTestTrait');
+
+        $this->assertInertia($this->inertiaResult(true))->reload();
+    }
 }
