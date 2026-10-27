@@ -10,7 +10,8 @@ use Ejklock\Ci4Inertia\ResponseFactory;
 
 if (! function_exists('inertia_app')) {
     /**
-     * Prints the page object as the JSON script tag an Inertia client reads on a first visit,
+     * Prints the server-side render of the page when the SSR gateway gave one. Otherwise prints
+     * the page object as the JSON script tag an Inertia client reads on a first visit,
      * followed by the element it mounts on. `JSON_HEX_TAG` keeps a prop value from closing the
      * tag; the other flags match the Inertia JSON response so both forms decode to the same page.
      *
@@ -21,10 +22,31 @@ if (! function_exists('inertia_app')) {
      */
     function inertia_app(array $page, string $id = 'app'): string
     {
+        $ssr = service('inertiaSsrState')->setPage($page)->dispatch();
+
+        if ($ssr !== null) {
+            return $ssr->body;
+        }
+
         $json = json_encode($page, JSON_HEX_TAG | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
         $id   = esc($id, 'attr');
 
         return '<script data-page="' . $id . '" type="application/json">' . $json . '</script><div id="' . $id . '"></div>';
+    }
+}
+
+if (! function_exists('inertia_head')) {
+    /**
+     * Prints the head the SSR server rendered for the page, or `$fallback` as given when the
+     * page was not rendered on the server.
+     *
+     * @param array<string, mixed> $page The page object `InertiaResponse` hands the root view.
+     */
+    function inertia_head(array $page, string $fallback = ''): string
+    {
+        $ssr = service('inertiaSsrState')->setPage($page)->dispatch();
+
+        return $ssr !== null ? $ssr->head : $fallback;
     }
 }
 

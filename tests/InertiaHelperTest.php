@@ -4,12 +4,16 @@ declare(strict_types=1);
 
 namespace Ejklock\Ci4Inertia\Tests;
 
+use CodeIgniter\Config\BaseService;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\SiteURI;
 use CodeIgniter\HTTP\UserAgent;
 use CodeIgniter\Test\CIUnitTestCase;
 use Config\App as AppConfig;
 use Config\Services;
+use Ejklock\Ci4Inertia\Inertia;
+use Ejklock\Ci4Inertia\Ssr\Gateway;
+use Ejklock\Ci4Inertia\Ssr\Response;
 use JsonException;
 use stdClass;
 
@@ -21,6 +25,8 @@ use stdClass;
  */
 final class InertiaHelperTest extends CIUnitTestCase
 {
+    private int $gatewayCalls = 0;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -175,6 +181,11 @@ final class InertiaHelperTest extends CIUnitTestCase
         $this->assertStringEndsWith('/y', $response->getHeaderLine('X-Inertia-Location'));
     }
 
+    public function testTheHeadHelperIsDefinedByLoadingTheHelper(): void
+    {
+        $this->assertTrue(function_exists('inertia_head'));
+    }
+
     public function testBothHelpersAreDefinedByLoadingTheHelper(): void
     {
         $this->assertTrue(function_exists('inertia'));
@@ -205,8 +216,108 @@ final class InertiaHelperTest extends CIUnitTestCase
         Services::resetSingle('inertia');
     }
 
+    private function injectSsrResponse(?Response $response): void
+    {
+        $this->gatewayCalls = 0;
+
+        BaseService::injectMock('inertiaSsrGateway', new class ($response, $this) implements Gateway {
+            public function __construct(private readonly ?Response $response, private readonly InertiaHelperTest $test)
+            {
+            }
+
+            public function dispatch(array $page): ?Response
+            {
+                $this->test->countGatewayCall();
+
+                return $this->response;
+            }
+        });
+    }
+
+    public function countGatewayCall(): void
+    {
+        $this->gatewayCalls++;
+    }
+
+    public function testInertiaAppPrintsOnlyTheServerRenderedBody(): void
+    {
+        $this->injectSsrResponse(new Response('<title>T</title>', '<div id="app">ssr</div>'));
+
+        $this->assertSame('<div id="app">ssr</div>', inertia_app($this->page()));
+    }
+
+    public function testInertiaHeadPrintsTheServerRenderedHeadAndIgnoresTheFallback(): void
+    {
+        $this->injectSsrResponse(new Response('<title>T</title>', '<div id="app">ssr</div>'));
+
+        $this->assertSame('<title>T</title>', inertia_head($this->page()));
+        $this->assertSame('<title>T</title>', inertia_head($this->page(), '<title>F</title>'));
+    }
+
+    public function testWithoutAServerRenderTheScriptTagAndEmptyHeadAreKept(): void
+    {
+        $this->injectSsrResponse(null);
+        $page = $this->page();
+
+        $this->assertStringStartsWith('<script data-page="app" type="application/json">', inertia_app($page));
+        $this->assertStringEndsWith('</script><div id="root"></div>', inertia_app($page, 'root'));
+        $this->assertSame('', inertia_head($page));
+    }
+
+    public function testWithoutAServerRenderTheHeadFallbackIsPrintedUnescaped(): void
+    {
+        $this->injectSsrResponse(null);
+
+        $this->assertSame('<title>F</title>', inertia_head($this->page(), '<title>F</title>'));
+    }
+
+    public function testHeadThenAppSendTheSamePageToTheGatewayOnce(): void
+    {
+        $this->injectSsrResponse(new Response('h', 'b'));
+        $page = $this->page();
+
+        inertia_head($page);
+        inertia_app($page);
+
+        $this->assertSame(1, $this->gatewayCalls);
+    }
+
+    public function testRootViewPrintsTheServerRenderedHeadAndBody(): void
+    {
+        $this->injectSsrResponse(new Response('<title>SSR head</title>', '<div id="app">SSR body</div>'));
+
+        $html = $this->renderSsrShell();
+
+        $this->assertStringContainsString('<title>SSR head</title>', $html);
+        $this->assertStringContainsString('<div id="app">SSR body</div>', $html);
+        $this->assertStringNotContainsString('data-page', $html);
+        $this->assertStringNotContainsString('Fallback head', $html);
+        $this->assertSame(1, $this->gatewayCalls);
+    }
+
+    public function testRootViewKeepsTheScriptTagAndHeadFallbackWithoutABundle(): void
+    {
+        $html = $this->renderSsrShell();
+
+        $this->assertStringContainsString('<title>Fallback head</title>', $html);
+        $this->assertStringContainsString('<script data-page="app" type="application/json">', $html);
+        $this->assertStringContainsString('"component":"Users/Index"', $html);
+    }
+
+    private function renderSsrShell(): string
+    {
+        $this->useRequest();
+        Inertia::setRootView('Ejklock\\Ci4InertiaTestSupport\\Views\\ssr_shell');
+
+        return (string) Inertia::render('Users/Index')
+            ->toResponse($this->makeRequest(), service('response', null, false))
+            ->getBody();
+    }
+
     protected function tearDown(): void
     {
+        BaseService::resetSingle('inertiaSsrState');
+        BaseService::resetSingle('inertiaSsrGateway');
         Services::reset(true);
 
         parent::tearDown();

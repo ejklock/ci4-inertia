@@ -11,6 +11,7 @@ use Ejklock\Ci4Inertia\ResponseFactory;
 use Ejklock\Ci4Inertia\Ssr\BundleDetector;
 use Ejklock\Ci4Inertia\Ssr\Gateway;
 use Ejklock\Ci4Inertia\Ssr\HttpGateway;
+use Ejklock\Ci4Inertia\Ssr\SsrState;
 
 /**
  * Registers the `inertia` service through the framework's package service discovery; an
@@ -54,5 +55,18 @@ class Services extends BaseService
             static fn (array $options) => FrameworkServices::curlrequest($options, null, null, false),
             new BundleDetector($config),
         );
+    }
+
+    /**
+     * The server-side rendering state of the current request: the page being rendered and the
+     * response the gateway gave for it, so one page reaches the gateway at most once.
+     */
+    public static function inertiaSsrState(bool $getShared = true): SsrState
+    {
+        if ($getShared) {
+            return static::getSharedInstance('inertiaSsrState');
+        }
+
+        return new SsrState();
     }
 }
