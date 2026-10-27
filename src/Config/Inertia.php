@@ -119,6 +119,19 @@ class Inertia extends BaseConfig
     public ?string $ssrBundle = null;
 
     /**
+     * The runtime `inertia:start-ssr` runs the SSR bundle with, such as `node` or `bun`. The
+     * `--runtime` option takes precedence. With `$ssrEnsureRuntimeExists` on, it must be a name
+     * found on the PATH; an absolute path is not accepted.
+     */
+    public string $ssrRuntime = 'node';
+
+    /**
+     * Whether `inertia:start-ssr` refuses to start when the runtime cannot be found on the PATH,
+     * as inertia-laravel does; an absolute path is never found.
+     */
+    public bool $ssrEnsureRuntimeExists = false;
+
+    /**
      * Whether a failed server render throws `Ejklock\Ci4Inertia\Ssr\SsrException` instead of
      * falling back to client rendering.
      */

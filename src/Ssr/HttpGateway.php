@@ -18,7 +18,7 @@ use Exception;
  * application overrides in a subclass. SSR can be switched off with a condition, skipped for
  * paths and its request adjusted before it is sent.
  */
-class HttpGateway implements ConfiguresSsrRequests, DisablesSsr, ExcludesSsrPaths, Gateway
+class HttpGateway implements ConfiguresSsrRequests, DisablesSsr, ExcludesSsrPaths, Gateway, HasHealthCheck
 {
     use ResolvesCallables;
 
@@ -107,6 +107,21 @@ class HttpGateway implements ConfiguresSsrRequests, DisablesSsr, ExcludesSsrPath
     public function configureRequestUsing(?Closure $callback = null): void
     {
         $this->requestConfigurator = $callback;
+    }
+
+    /**
+     * Whether the production server answers its `/health` endpoint with a 2xx status; any failure to
+     * reach it counts as unhealthy.
+     */
+    public function isHealthy(): bool
+    {
+        try {
+            $status = $this->pendingRequest()->get($this->getProductionUrl('/health'))->getStatusCode();
+
+            return $status >= 200 && $status < 300;
+        } catch (Exception) {
+            return false;
+        }
     }
 
     /**

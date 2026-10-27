@@ -8,6 +8,7 @@ use ArrayObject;
 use Closure;
 use CodeIgniter\Events\Events;
 use CodeIgniter\HTTP\CURLRequest;
+use CodeIgniter\HTTP\Exceptions\HTTPException;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\ResponseInterface;
 use CodeIgniter\HTTP\SiteURI;
@@ -23,6 +24,7 @@ use Ejklock\Ci4Inertia\Ssr\ConfiguresSsrRequests;
 use Ejklock\Ci4Inertia\Ssr\DisablesSsr;
 use Ejklock\Ci4Inertia\Ssr\ExcludesSsrPaths;
 use Ejklock\Ci4Inertia\Ssr\Gateway;
+use Ejklock\Ci4Inertia\Ssr\HasHealthCheck;
 use Ejklock\Ci4Inertia\Ssr\HttpGateway;
 use Ejklock\Ci4Inertia\Ssr\Response;
 use Ejklock\Ci4Inertia\Ssr\SsrErrorType;
@@ -691,6 +693,61 @@ final class HttpGatewayTest extends CIUnitTestCase
         $gateway = new HttpGateway($this->config, fn (array $options): CURLRequest => $this->makeClient($options), $this->detector());
 
         $this->assertSame('http://127.0.0.1:13714/health', $gateway->getProductionUrl('/health'));
+    }
+
+    #[DataProvider('provideTheServerIsHealthyOnlyForASuccessStatus')]
+    public function testTheServerIsHealthyOnlyForASuccessStatus(string $status, bool $healthy): void
+    {
+        $this->answer($status, '');
+
+        $this->assertSame($healthy, $this->httpGateway()->isHealthy());
+    }
+
+    /**
+     * @return iterable<string, array{string, bool}>
+     */
+    public static function provideTheServerIsHealthyOnlyForASuccessStatus(): iterable
+    {
+        yield '200' => ['200 OK', true];
+
+        yield '204' => ['204 No Content', true];
+
+        yield '299' => ['299 Custom', true];
+
+        yield '300' => ['300 Multiple Choices', false];
+
+        yield '404' => ['404 Not Found', false];
+
+        yield '500' => ['500 Internal Server Error', false];
+    }
+
+    public function testTheServerIsNotHealthyWhenTheRequestFails(): void
+    {
+        $this->failure = HTTPException::forCurlError('7', 'connection refused');
+
+        $this->assertFalse($this->httpGateway()->isHealthy());
+        $this->assertSame(1, $this->sent);
+    }
+
+    public function testTheServerIsNotHealthyWhenAnotherExceptionIsThrown(): void
+    {
+        $this->failure = new RuntimeException('boom');
+
+        $this->assertFalse($this->httpGateway()->isHealthy());
+    }
+
+    public function testTheHealthCheckGetsTheHealthUrlThroughThePendingRequest(): void
+    {
+        $this->config->ssrTimeout = 3;
+        $gateway                  = $this->httpGateway();
+        $gateway->configureRequestUsing(static fn (CURLRequest $client): CURLRequest => $client->setHeader('X-Trace', 'abc'));
+
+        $this->assertContains(HasHealthCheck::class, class_implements($gateway));
+        $this->assertTrue($gateway->isHealthy());
+        $this->assertSame('http://127.0.0.1:13714/health', $this->client->curl_options[CURLOPT_URL]);
+        $this->assertArrayNotHasKey(CURLOPT_POST, $this->client->curl_options);
+        $this->assertEqualsWithDelta(3000, $this->client->curl_options[CURLOPT_TIMEOUT_MS], 0.001);
+        $this->assertContains('X-Trace: abc', $this->client->curl_options[CURLOPT_HTTPHEADER]);
     }
 
     public function testAnSsrExceptionCanBeBuiltWithoutAnEvent(): void
