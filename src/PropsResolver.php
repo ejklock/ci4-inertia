@@ -67,6 +67,11 @@ final class PropsResolver
     private array $onceProps = [];
 
     /**
+     * @var array<string, array{pageName: string, previousPage: int|string|null, nextPage: int|string|null, currentPage: int|string|null, reset: bool}>
+     */
+    private array $scrollProps = [];
+
+    /**
      * Paths of rescuing props whose resolution threw, in resolution order.
      *
      * @var list<string>
@@ -274,6 +279,10 @@ final class PropsResolver
             $metadata['rescuedProps'] = $this->rescuedProps;
         }
 
+        if ($this->scrollProps !== []) {
+            $metadata['scrollProps'] = $this->scrollProps;
+        }
+
         if ($this->onceProps !== []) {
             // An object for the same reason as the deferred groups: a key like "7" must stay a map key.
             $metadata['onceProps'] = (object) $this->onceProps;
@@ -310,6 +319,7 @@ final class PropsResolver
                 continue;
             }
 
+            $prop  = $this->withMergeIntent($prop);
             $value = $this->resolveValue($prop, $path, $props);
 
             if (in_array($path, $this->rescuedProps, true)) {
@@ -325,6 +335,7 @@ final class PropsResolver
                     continue;
                 }
 
+                $prop  = $this->withMergeIntent($prop);
                 $value = $this->resolveValue($prop, $path, $props);
             }
 
@@ -338,6 +349,15 @@ final class PropsResolver
         }
 
         return $result;
+    }
+
+    /**
+     * A scroll prop merges in the direction the client asked for; the prop the caller gave stays
+     * as it was, so the configured copy is the one the metadata is collected from.
+     */
+    private function withMergeIntent(mixed $prop): mixed
+    {
+        return $prop instanceof ScrollProp ? $prop->configureMergeIntent($this->request) : $prop;
     }
 
     private function shouldIncludeInPartialResponse(mixed $prop, string $path, bool $parentWasResolved): bool
@@ -490,7 +510,19 @@ final class PropsResolver
             $this->collectMergeableMetadata($path, $prop);
         }
 
+        if ($prop instanceof ScrollProp) {
+            $this->collectScrollMetadata($path, $prop);
+        }
+
         $this->collectOnceMetadata($path, $prop);
+    }
+
+    private function collectScrollMetadata(string $path, ScrollProp $prop): void
+    {
+        $this->scrollProps[$path] = [
+            ...$prop->metadata(),
+            'reset' => in_array($path, $this->resetProps, true),
+        ];
     }
 
     /**

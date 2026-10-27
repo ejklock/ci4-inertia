@@ -10,9 +10,11 @@ use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\SiteURI;
 use CodeIgniter\HTTP\UserAgent;
 use CodeIgniter\I18n\Time;
+use CodeIgniter\Pager\Exceptions\PagerException;
 use CodeIgniter\Test\CIUnitTestCase;
 use CodeIgniter\Test\TestLogger;
 use Config\App as AppConfig;
+use Config\Services;
 use DateInterval;
 use DateTimeImmutable;
 use Ejklock\Ci4Inertia\AlwaysProp;
@@ -29,6 +31,8 @@ use Ejklock\Ci4Inertia\ProvidesInertiaProperty;
 use Ejklock\Ci4Inertia\RenderContext;
 use Ejklock\Ci4Inertia\Rescuable;
 use Ejklock\Ci4Inertia\ResponseFactory;
+use Ejklock\Ci4Inertia\ScrollMetadata;
+use Ejklock\Ci4Inertia\ScrollProp;
 use Exception;
 use Generator;
 use InvalidArgumentException;
@@ -1423,9 +1427,304 @@ final class PropsResolverTest extends CIUnitTestCase
         $this->assertTrue($rescuing->deepMerge()->append('a')->shouldRescue());
     }
 
+    #[DataProvider('provideScrollMetadataReadsTheSharedPagerPosition')]
+    public function testScrollMetadataReadsTheSharedPagerPosition(int $page, int $perPage, int $total, ?int $previous, ?int $next, int $current): void
+    {
+        service('pager')->store('default', $page, $perPage, $total);
+
+        $metadata = ScrollMetadata::fromPager(service('pager'));
+
+        $this->assertSame('page', $metadata->getPageName());
+        $this->assertSame($previous, $metadata->getPreviousPage());
+        $this->assertSame($next, $metadata->getNextPage());
+        $this->assertSame($current, $metadata->getCurrentPage());
+        $this->assertSame(
+            ['pageName' => 'page', 'previousPage' => $previous, 'nextPage' => $next, 'currentPage' => $current],
+            $metadata->toArray(),
+        );
+    }
+
+    /**
+     * @return array<string, array{int, int, int, int|null, int|null, int}>
+     */
+    public static function provideScrollMetadataReadsTheSharedPagerPosition(): iterable
+    {
+        return [
+            'first of three'  => [1, 10, 25, null, 2, 1],
+            'middle of three' => [2, 10, 25, 1, 3, 2],
+            'last of three'   => [3, 10, 25, 2, null, 3],
+            'single page'     => [1, 10, 4, null, null, 1],
+        ];
+    }
+
+    public function testScrollMetadataNamesThePageParameterAfterTheGroup(): void
+    {
+        service('pager')->store('users', 2, 10, 25);
+
+        $metadata = ScrollMetadata::fromPager(service('pager'), 'users');
+
+        $this->assertSame('page_users', $metadata->getPageName());
+        $this->assertSame(1, $metadata->getPreviousPage());
+        $this->assertSame(3, $metadata->getNextPage());
+        $this->assertSame(2, $metadata->getCurrentPage());
+    }
+
+    public function testScrollMetadataOfAGroupTheRequestNeverPaginatedTellsTheCallerToPaginateFirst(): void
+    {
+        try {
+            ScrollMetadata::fromPager(service('pager'), 'ghosts');
+            $this->fail('An unstored pager group must not yield metadata.');
+        } catch (InvalidArgumentException $e) {
+            $this->assertInstanceOf(PagerException::class, $e->getPrevious());
+            $this->assertSame(
+                'The pager group "ghosts" holds no pagination: paginate before building the response or pass the scroll metadata explicitly.',
+                $e->getMessage(),
+            );
+        }
+    }
+
+    private function scrollRender(ScrollProp $scroll, array $headers = []): array
+    {
+        return $this->renderPage(['users' => $scroll], $headers);
+    }
+
+    public function testAScrollPropListsItsExplicitPaginationAndMergesItsWrapper(): void
+    {
+        $scroll = (new ResponseFactory($this->request(), 'app', static fn (): string => 'v1'))
+            ->scroll(static fn (): array => ['data' => [['id' => 1]]], metadata: new ScrollMetadata('page', null, 2, 1));
+
+        $page = $this->scrollRender($scroll);
+
+        $this->assertSame(['users' => ['data' => [['id' => 1]]]], $page['props']);
+        $this->assertSame(
+            ['users' => ['pageName' => 'page', 'previousPage' => null, 'nextPage' => 2, 'currentPage' => 1, 'reset' => false]],
+            $page['scrollProps'],
+        );
+        $this->assertSame(['users.data'], $page['mergeProps']);
+        $this->assertArrayNotHasKey('prependProps', $page);
+    }
+
+    public function testAScrollPropWithoutMetadataReadsThePagerStoredWhileItsValueResolved(): void
+    {
+        $scroll = new ScrollProp(static function (): array {
+            service('pager')->store('default', 2, 10, 25);
+
+            return ['data' => [['id' => 11]]];
+        });
+
+        $page = $this->scrollRender($scroll);
+
+        $this->assertSame(
+            ['users' => ['pageName' => 'page', 'previousPage' => 1, 'nextPage' => 3, 'currentPage' => 2, 'reset' => false]],
+            $page['scrollProps'],
+        );
+    }
+
+    public function testAScrollPropWithoutMetadataAndNoStoredPaginationFailsTheRender(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+
+        $this->scrollRender(new ScrollProp(static fn (): array => ['data' => []]));
+    }
+
+    public function testACallableScrollMetadataReceivesTheResolvedValue(): void
+    {
+        /** @var ArrayObject<int, array<string, mixed>> $received */
+        $received = new ArrayObject();
+        $scroll   = new ScrollProp(
+            static fn (): array => ['data' => [1, 2], 'next' => 'abc'],
+            'data',
+            static function (array $value) use ($received): ScrollMetadata {
+                $received->append($value);
+
+                return new ScrollMetadata('cursor', null, $value['next'], 'start');
+            },
+        );
+
+        $page = $this->scrollRender($scroll);
+
+        $this->assertSame([['data' => [1, 2], 'next' => 'abc']], $received->getArrayCopy());
+        $this->assertSame(
+            ['users' => ['pageName' => 'cursor', 'previousPage' => null, 'nextPage' => 'abc', 'currentPage' => 'start', 'reset' => false]],
+            $page['scrollProps'],
+        );
+    }
+
+    public function testAScrollPropCallbackRunsOncePerRender(): void
+    {
+        $calls  = $this->newCalls();
+        $scroll = new ScrollProp(
+            $this->recording($calls, 'value', ['data' => []]),
+            'data',
+            new ScrollMetadata('page', null, null, 1),
+        );
+
+        $this->scrollRender($scroll);
+
+        $this->assertSame(['value'], $calls->getArrayCopy());
+
+        $withCallable = new ScrollProp(
+            $this->recording($calls, 'again', ['data' => []]),
+            'data',
+            static fn (): ScrollMetadata => new ScrollMetadata('page', null, null, 1),
+        );
+
+        $this->scrollRender($withCallable);
+
+        $this->assertSame(['value', 'again'], $calls->getArrayCopy());
+    }
+
+    #[DataProvider('provideTheMergeIntentHeaderPicksTheDirectionOfTheWrapperPath')]
+    public function testTheMergeIntentHeaderPicksTheDirectionOfTheWrapperPath(?string $intent, bool $prepends): void
+    {
+        $headers = $this->partial(['X-Inertia-Partial-Data' => 'users']);
+
+        if ($intent !== null) {
+            $headers['X-Inertia-Infinite-Scroll-Merge-Intent'] = $intent;
+        }
+
+        $page = $this->scrollRender(new ScrollProp(static fn (): array => ['items' => []], 'items', new ScrollMetadata('page', null, null, 1)), $headers);
+
+        $this->assertSame($prepends ? ['users.items'] : [], $page['prependProps'] ?? []);
+        $this->assertSame($prepends ? [] : ['users.items'], $page['mergeProps'] ?? []);
+    }
+
+    /**
+     * @return array<string, array{string|null, bool}>
+     */
+    public static function provideTheMergeIntentHeaderPicksTheDirectionOfTheWrapperPath(): iterable
+    {
+        return [
+            'prepend'      => ['prepend', true],
+            'append'       => ['append', false],
+            'absent'       => [null, false],
+            'another case' => ['PREPEND', false],
+            'unknown'      => ['x', false],
+        ];
+    }
+
+    public function testResettingAScrollPropKeepsItsPaginationAndDropsItsMergePaths(): void
+    {
+        $page = $this->scrollRender(
+            new ScrollProp(static fn (): array => ['items' => []], 'items', new ScrollMetadata('page', null, 2, 1)),
+            ['X-Inertia-Reset' => 'users'],
+        );
+
+        $this->assertTrue($page['scrollProps']['users']['reset']);
+        $this->assertArrayNotHasKey('mergeProps', $page);
+        $this->assertArrayNotHasKey('prependProps', $page);
+    }
+
+    public function testRenderingAScrollPropLeavesTheInstanceItWasGivenUnchanged(): void
+    {
+        $scroll = new ScrollProp(static fn (): array => ['data' => []], 'data', new ScrollMetadata('page', null, null, 1));
+
+        $this->scrollRender($scroll, ['X-Inertia-Infinite-Scroll-Merge-Intent' => 'prepend']);
+
+        $this->assertSame([], $scroll->appendsAtPaths());
+        $this->assertSame([], $scroll->prependsAtPaths());
+        $this->assertTrue($scroll->appendsAtRoot());
+    }
+
+    public function testADeferredScrollPropIsLeftOutOfTheFirstLoadWithoutRunningItsCallback(): void
+    {
+        $calls  = $this->newCalls();
+        $scroll = (new ScrollProp($this->recording($calls, 'feed', ['data' => []]), 'data', new ScrollMetadata('page', null, null, 1)))->defer('feed');
+
+        $page = $this->scrollRender($scroll);
+
+        $this->assertSame([], $page['props']);
+        $this->assertSame(['feed' => ['users']], $page['deferredProps']);
+        $this->assertSame(['users'], $page['mergeProps']);
+        $this->assertArrayNotHasKey('scrollProps', $page);
+        $this->assertSame([], $calls->getArrayCopy());
+    }
+
+    public function testTheRescuedListPrecedesTheScrollListInThePage(): void
+    {
+        $page = $this->renderPage(
+            [
+                'users' => new ScrollProp(static fn (): array => ['data' => []], 'data', new ScrollMetadata('page', null, null, 1)),
+                'stats' => $this->rescuingThrow('boom-ordered'),
+            ],
+            $this->partial(['X-Inertia-Partial-Data' => 'users,stats']),
+        );
+
+        $this->assertSame(['mergeProps', 'rescuedProps', 'scrollProps'], array_keys($this->metadata($page)));
+    }
+
+    public function testADeferredScrollPropIsSentWithItsPaginationWhenAPartialReloadNamesIt(): void
+    {
+        $scroll = (new ScrollProp(static fn (): array => ['data' => [1]], 'data', new ScrollMetadata('page', null, 2, 1)))->defer('feed');
+
+        $page = $this->scrollRender($scroll, $this->partial(['X-Inertia-Partial-Data' => 'users']));
+
+        $this->assertSame(['users' => ['data' => [1]]], $page['props']);
+        $this->assertSame(2, $page['scrollProps']['users']['nextPage']);
+        $this->assertArrayNotHasKey('deferredProps', $page);
+    }
+
+    public function testEveryScrollPropModifierReturnsANewInstanceAndLeavesTheOriginalAlone(): void
+    {
+        $original = new ScrollProp(static fn (): array => ['data' => []]);
+
+        $this->assertNotSame($original, $original->defer('a'));
+        $this->assertFalse($original->shouldDefer());
+        $this->assertSame('default', $original->group());
+        $this->assertSame('a', $original->defer('a')->group());
+        $this->assertSame('default', $original->defer()->group());
+
+        $this->assertNotSame($original, $original->merge());
+        $this->assertTrue($original->deepMerge()->shouldDeepMerge());
+        $this->assertFalse($original->shouldDeepMerge());
+        $this->assertSame(['id'], $original->matchOn('id')->matchesOn());
+        $this->assertSame([], $original->matchesOn());
+        $this->assertSame(['x'], $original->append('x')->appendsAtPaths());
+        $this->assertSame(['x'], $original->prepend('x')->prependsAtPaths());
+        $this->assertSame([], $original->appendsAtPaths());
+        $this->assertSame([], $original->prependsAtPaths());
+        $this->assertSame(['data'], $original->configureMergeIntent($this->request())->appendsAtPaths());
+        $this->assertSame([], $original->appendsAtPaths());
+        $this->assertTrue($original->shouldMerge());
+    }
+
+    public function testAScrollPropCopyKeepsTheValueAlreadyResolved(): void
+    {
+        $calls  = $this->newCalls();
+        $scroll = new ScrollProp($this->recording($calls, 'value', ['data' => [1]]), 'data', new ScrollMetadata('page'));
+
+        $scroll();
+        $copy = $scroll->defer('x');
+
+        $this->assertSame(['data' => [1]], $copy());
+        $this->assertSame(['value'], $calls->getArrayCopy());
+    }
+
+    public function testTheScrollMetadataKeyFollowsTheMergeListsAndPrecedesTheOnceListInThePage(): void
+    {
+        $page = $this->renderPage([
+            'tags'  => new MergeProp([1]),
+            'users' => new ScrollProp(static fn (): array => ['data' => []], 'data', new ScrollMetadata('page', null, null, 1)),
+            'plan'  => new OnceProp(static fn (): string => 'pro'),
+            'later' => (new DeferProp(static fn (): int => 1))->defer('x'),
+        ]);
+
+        $keys = array_keys($this->metadata($page));
+
+        $this->assertSame(['mergeProps', 'deferredProps', 'scrollProps', 'onceProps'], $keys);
+    }
+
+    private function request(): IncomingRequest
+    {
+        $config = config(AppConfig::class);
+
+        return new IncomingRequest($config, new SiteURI($config, 'users'), null, new UserAgent());
+    }
+
     protected function tearDown(): void
     {
         Time::setTestNow();
+        Services::resetSingle('pager');
         parent::tearDown();
     }
 }

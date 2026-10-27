@@ -16,6 +16,7 @@ use Ejklock\Ci4Inertia\InertiaResponse;
 use Ejklock\Ci4Inertia\ProvidesInertiaProperties;
 use Ejklock\Ci4Inertia\RenderContext;
 use Ejklock\Ci4Inertia\ResponseFactory;
+use Ejklock\Ci4Inertia\ScrollMetadata;
 use PHPUnit\Framework\AssertionFailedError;
 use ReflectionClass;
 use ReflectionMethod;
@@ -197,6 +198,18 @@ final class InertiaTest extends CIUnitTestCase
 
         $this->assertFalse(Inertia::defer(static fn (): int => 5)->shouldRescue());
         $this->assertTrue(Inertia::defer(static fn (): int => 5, 'default', true)->shouldRescue());
+    }
+
+    public function testScrollReturnsAScrollPropWithTheDataWrapperOrACustomOne(): void
+    {
+        $this->injectFactory();
+
+        $default = Inertia::scroll(static fn (): array => ['data' => []], metadata: new ScrollMetadata('page', null, 2, 1));
+        $custom  = Inertia::scroll([], 'items', new ScrollMetadata('page'));
+        $page    = $this->pageOf(Inertia::render('C', ['u' => $default, 'v' => $custom]));
+
+        $this->assertSame(['u.data', 'v.items'], $page['mergeProps']);
+        $this->assertSame(2, $page['scrollProps']['u']['nextPage']);
     }
 
     public function testMergeAndDeepMergePropsAreListedByTheRender(): void

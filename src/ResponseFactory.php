@@ -334,6 +334,25 @@ final class ResponseFactory
     }
 
     /**
+     * Marks a paginated prop the client scrolls through, merging each page it loads into the
+     * value it holds at the wrapper key: pass the result as a prop value to `render()` or
+     * `share()`. The page lists its position under `scrollProps`; without metadata that
+     * position is read from the shared pager's `default` group once the value has resolved, which
+     * is where `$model->paginate()` stores it. For another group pass
+     * `ScrollMetadata::fromPager($pager, 'users')`.
+     *
+     * @param mixed                                                               $value    The paginated data, or a closure or invokable object
+     *                                                                                      called only when the prop is sent.
+     * @param string                                                              $wrapper  The key of the paginated items inside the value.
+     * @param callable(mixed): ProvidesScrollMetadata|ProvidesScrollMetadata|null $metadata The pagination position, or a callable that builds it
+     *                                                                                      from the resolved value.
+     */
+    public function scroll(mixed $value, string $wrapper = 'data', callable|ProvidesScrollMetadata|null $metadata = null): ScrollProp
+    {
+        return new ScrollProp($value, $wrapper, $metadata);
+    }
+
+    /**
      * Marks a prop the client deep-merges into the value it already holds instead of
      * replacing it: pass the result as a prop value to `render()` or `share()`.
      *

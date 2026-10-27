@@ -18,6 +18,7 @@ use Ejklock\Ci4Inertia\Config\Inertia as InertiaConfig;
 use Ejklock\Ci4Inertia\ProvidesInertiaProperties;
 use Ejklock\Ci4Inertia\RenderContext;
 use Ejklock\Ci4Inertia\ResponseFactory;
+use Ejklock\Ci4Inertia\ScrollMetadata;
 use Ejklock\Ci4Inertia\Support\SessionKey;
 use InvalidArgumentException;
 use PHPUnit\Framework\Assert;
@@ -115,6 +116,26 @@ final class ResponseFactoryTest extends CIUnitTestCase
         $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
 
         $this->assertSame('default', $factory->defer(static fn (): int => 7)->group());
+    }
+
+    public function testScrollBuildsAScrollPropWrappingTheValueUnderTheDataKeyByDefault(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+        $prop = $factory->scroll(static fn (): array => ['data' => [1]], metadata: new ScrollMetadata('page', null, 2, 1));
+
+        $this->assertSame(['data' => [1]], $prop());
+        $this->assertSame(['pageName' => 'page', 'previousPage' => null, 'nextPage' => 2, 'currentPage' => 1], $prop->metadata());
+        $this->assertSame(['data'], $prop->configureMergeIntent($this->makeRequest())->appendsAtPaths());
+    }
+
+    public function testScrollTakesACustomWrapper(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+        $prop = $factory->scroll([], 'items', new ScrollMetadata('page'));
+
+        $this->assertSame(['items'], $prop->configureMergeIntent($this->makeRequest())->appendsAtPaths());
     }
 
     public function testDeferBuildsARescuingPropOnlyWhenAsked(): void

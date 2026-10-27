@@ -159,9 +159,10 @@ final class InertiaResponse
     /**
      * Assembles the page object: the keys `component`, `props`, `url` and `version`, then the
      * metadata the props resolver collected (`sharedProps`, `mergeProps`, `prependProps`,
-     * `deepMergeProps`, `matchPropsOn`, `deferredProps`) when it is not empty, then `clearHistory`,
-     * `encryptHistory`, `flash` and `preserveFragment` when each holds — the shape both `asJson()`
-     * and `asHtml()` serialize verbatim.
+     * `deepMergeProps`, `matchPropsOn`, `deferredProps`, `rescuedProps`, `scrollProps`,
+     * `onceProps`) when it is not empty, then `clearHistory`, `encryptHistory`, `flash` and
+     * `preserveFragment` when each holds — the shape both `asJson()` and `asHtml()` serialize
+     * verbatim.
      *
      * @return array<string, mixed>
      */

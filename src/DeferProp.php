@@ -27,6 +27,7 @@ use ReflectionClass;
  */
 final readonly class DeferProp implements Deferrable, IgnoreFirstLoad, Mergeable, Onceable, Rescuable
 {
+    use MergesProps;
     use ResolvesCallables;
     use ResolvesOnce;
 
@@ -92,82 +93,19 @@ final readonly class DeferProp implements Deferrable, IgnoreFirstLoad, Mergeable
         return $this->group;
     }
 
-    public function merge(): static
+    protected function mergeState(): MergeProp
     {
-        return $this->with(merges: true);
+        return $this->merging;
     }
 
-    public function deepMerge(): static
-    {
-        return $this->with(merging: $this->merging->deepMerge(), merges: true);
-    }
-
-    /**
-     * @param list<string>|string $matchOn
-     */
-    public function matchOn(array|string $matchOn): static
-    {
-        return $this->with(merging: $this->merging->matchOn($matchOn));
-    }
-
-    /**
-     * @param array<array-key, string>|bool|string $path
-     */
-    public function append(array|bool|string $path = true, ?string $matchOn = null): static
-    {
-        return $this->with(merging: $this->merging->append($path, $matchOn));
-    }
-
-    /**
-     * @param array<array-key, string>|bool|string $path
-     */
-    public function prepend(array|bool|string $path = true, ?string $matchOn = null): static
-    {
-        return $this->with(merging: $this->merging->prepend($path, $matchOn));
-    }
-
-    public function shouldMerge(): bool
+    protected function mergesFlag(): bool
     {
         return $this->merges;
     }
 
-    public function shouldDeepMerge(): bool
+    protected function withMergeState(MergeProp $merging, ?bool $merges = null): static
     {
-        return $this->merging->shouldDeepMerge();
-    }
-
-    /**
-     * @return list<string>
-     */
-    public function matchesOn(): array
-    {
-        return $this->merging->matchesOn();
-    }
-
-    public function appendsAtRoot(): bool
-    {
-        return $this->merging->appendsAtRoot();
-    }
-
-    public function prependsAtRoot(): bool
-    {
-        return $this->merging->prependsAtRoot();
-    }
-
-    /**
-     * @return list<string>
-     */
-    public function appendsAtPaths(): array
-    {
-        return $this->merging->appendsAtPaths();
-    }
-
-    /**
-     * @return list<string>
-     */
-    public function prependsAtPaths(): array
-    {
-        return $this->merging->prependsAtPaths();
+        return $this->with(merging: $merging, merges: $merges);
     }
 
     /**
