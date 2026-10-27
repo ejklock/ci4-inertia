@@ -13,7 +13,6 @@ use Config\App as AppConfig;
 use Ejklock\Ci4Inertia\AlwaysProp;
 use Ejklock\Ci4Inertia\DeferProp;
 use Ejklock\Ci4Inertia\InertiaResponse;
-use Ejklock\Ci4Inertia\LazyProp;
 use Ejklock\Ci4Inertia\MergeProp;
 use Ejklock\Ci4Inertia\OptionalProp;
 use InvalidArgumentException;
@@ -24,7 +23,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
  * the page object's four keys and their values, the `X-Inertia` header as the sole
  * content-negotiation signal between the HTML shell and the JSON body, URL
  * normalization, and partial-reload prop filtering including the guarantee that an
- * unrequested `LazyProp` callback is never invoked, and `AlwaysProp`'s bypass of that same
+ * unrequested closure prop is never invoked, and `AlwaysProp`'s bypass of that same
  * filtering so a shared prop like `errors` survives every partial reload.
  *
  * @internal
@@ -129,11 +128,11 @@ final class InertiaResponseTest extends CIUnitTestCase
         $countsInvoked = false;
         $props         = [
             'users'  => ['a', 'b'],
-            'counts' => new LazyProp(static function () use (&$countsInvoked) {
+            'counts' => static function () use (&$countsInvoked) {
                 $countsInvoked = true;
 
                 return ['open' => 3];
-            }),
+            },
         ];
 
         $inertia = new InertiaResponse('Users/Index', $props, 'v1', self::SHELL_VIEW);
@@ -159,11 +158,11 @@ final class InertiaResponseTest extends CIUnitTestCase
         $countsInvoked = false;
         $props         = [
             'users'  => ['a', 'b'],
-            'counts' => new LazyProp(static function () use (&$countsInvoked) {
+            'counts' => static function () use (&$countsInvoked) {
                 $countsInvoked = true;
 
                 return ['open' => 3];
-            }),
+            },
         ];
 
         $inertia = new InertiaResponse('Users/Index', $props, 'v1', self::SHELL_VIEW);
@@ -189,11 +188,11 @@ final class InertiaResponseTest extends CIUnitTestCase
         $countsInvoked = false;
         $props         = [
             'users'  => ['a', 'b'],
-            'counts' => new LazyProp(static function () use (&$countsInvoked) {
+            'counts' => static function () use (&$countsInvoked) {
                 $countsInvoked = true;
 
                 return ['open' => 3];
-            }),
+            },
         ];
 
         $inertia = new InertiaResponse('Users/Index', $props, 'v1', self::SHELL_VIEW);
@@ -371,12 +370,12 @@ final class InertiaResponseTest extends CIUnitTestCase
         $this->assertSame(0, $result['invocations']);
     }
 
-    public function testOptionalPropIsLeftOutOfAPartialReloadWithNoDataHeader(): void
+    public function testOptionalPropIsSentByAPartialReloadWithNoDataHeader(): void
     {
         $result = $this->renderWithOptionalProp(['X-Inertia-Partial-Component' => 'Settings/Index']);
 
-        $this->assertSame(['users'], array_keys($result['props']));
-        $this->assertSame(0, $result['invocations']);
+        $this->assertSame(['users', 'posts'], array_keys($result['props']));
+        $this->assertSame(1, $result['invocations']);
     }
 
     /**
@@ -527,15 +526,15 @@ final class InertiaResponseTest extends CIUnitTestCase
         $this->assertSame(['b'], $result['invoked']);
     }
 
-    public function testPartialReloadWithBlankDataSendsNoDeferredPropAndInvokesNone(): void
+    public function testPartialReloadWithNoDataSendsEveryDeferredPropNotExceptedAndOmitsTheDeferredList(): void
     {
         $result = $this->renderWithDeferredProps([
             'X-Inertia-Partial-Component' => 'Settings/Index',
             'X-Inertia-Partial-Except'    => 'a',
         ]);
 
-        $this->assertSame(['errors' => []], $result['page']['props']);
-        $this->assertSame([], $result['invoked']);
+        $this->assertSame(['b' => 'value-b', 'c' => 'value-c', 'd' => 'value-d', 'errors' => []], $result['page']['props']);
+        $this->assertSame(['b', 'c', 'd'], $result['invoked']);
         $this->assertArrayNotHasKey('deferredProps', $result['page']);
     }
 
@@ -585,9 +584,9 @@ final class InertiaResponseTest extends CIUnitTestCase
         yield 'whitespace only' => ['   '];
     }
 
-    public function testDeferPropResolveReturnsTheCallbackResult(): void
+    public function testDeferPropInvokeReturnsTheCallbackResult(): void
     {
-        $this->assertSame(['x' => 1], (new DeferProp(static fn (): array => ['x' => 1]))->resolve());
+        $this->assertSame(['x' => 1], (new DeferProp(static fn (): array => ['x' => 1]))());
     }
 
     public function testFirstVisitEmbedsTheMergeListsInTheHtmlShell(): void
@@ -598,7 +597,7 @@ final class InertiaResponseTest extends CIUnitTestCase
             'feed'     => (new MergeProp(static fn (): array => [9]))->prepend(),
             'settings' => (new MergeProp(['k' => 1]))->deepMerge(),
             'posts'    => (new MergeProp([4]))->matchOn('id'),
-            'tags'     => (new MergeProp([5]))->prepend()->matchOn('id', 'slug'),
+            'tags'     => (new MergeProp([5]))->prepend()->matchOn(['id', 'slug']),
         ];
 
         $response = (new InertiaResponse('Users/Index', $props, 'v1', self::SHELL_VIEW))
@@ -670,7 +669,7 @@ final class InertiaResponseTest extends CIUnitTestCase
     public function testDeferPropModesListUnderTheirOwnMergeKeys(): void
     {
         $deep    = $this->renderWithMergeableDeferProp((new DeferProp(static fn (): int => 1))->deepMerge(), []);
-        $prepend = $this->renderWithMergeableDeferProp((new DeferProp(static fn (): int => 1))->prepend()->matchOn('id'), []);
+        $prepend = $this->renderWithMergeableDeferProp((new DeferProp(static fn (): int => 1))->merge()->prepend()->matchOn('id'), []);
 
         $this->assertSame(['stats'], $deep['page']['deepMergeProps']);
         $this->assertArrayNotHasKey('mergeProps', $deep['page']);
@@ -683,6 +682,21 @@ final class InertiaResponseTest extends CIUnitTestCase
         $result = $this->renderWithMergeableDeferProp(new DeferProp(static fn (): int => 1), []);
 
         $this->assertSame(['component', 'props', 'url', 'version', 'deferredProps'], array_keys($result['page']));
+    }
+
+    public function testAppendOnADeferPropWithoutMergeLeavesItInNoMergeList(): void
+    {
+        $result = $this->renderWithMergeableDeferProp((new DeferProp(static fn (): int => 1))->append('data'), []);
+
+        $this->assertArrayHasKey('stats', array_flip($result['page']['deferredProps']['default']));
+        $this->assertSame([], array_intersect_key($result['page'], array_flip(['mergeProps', 'prependProps', 'deepMergeProps', 'matchPropsOn'])));
+    }
+
+    public function testAppendAfterMergeOnADeferPropListsThePathInTheMergeMetadata(): void
+    {
+        $result = $this->renderWithMergeableDeferProp((new DeferProp(static fn (): int => 1))->merge()->append('data'), []);
+
+        $this->assertSame(['stats.data'], $result['page']['mergeProps']);
     }
 
     public function testMergeCallOnADeferPropKeepsItsGroupAndLeavesTheOriginalUnmergeable(): void
@@ -767,11 +781,11 @@ final class InertiaResponseTest extends CIUnitTestCase
         $props   = [];
 
         foreach ($allPropNames as $propName) {
-            $props[$propName] = new LazyProp(static function () use (&$invoked, $propName) {
+            $props[$propName] = static function () use (&$invoked, $propName) {
                 $invoked[] = $propName;
 
                 return $propName . '-value';
-            });
+            };
         }
 
         $inertia = new InertiaResponse('Users/Index', $props, 'v1', self::SHELL_VIEW);

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Ejklock\Ci4Inertia;
 
-use Closure;
 use CodeIgniter\HTTP\ResponseInterface;
 use Ejklock\Ci4Inertia\Config\Services;
 use InvalidArgumentException;
@@ -21,10 +20,8 @@ final class Inertia
     }
 
     /**
-     * @param array<string, mixed> $props Per-render props, each a scalar, array, `null`,
-     *                                    or `ResolvableProp`.
-     *
-     * @throws InvalidArgumentException When a prop value is none of those shapes.
+     * @param array<string, mixed> $props Per-render props; a closure or invokable object is
+     *                                    called only when the prop is sent.
      *
      * @see ResponseFactory::render()
      */
@@ -51,7 +48,7 @@ final class Inertia
 
     /**
      * @param callable $callback Produces the prop's value; invoked only when a partial reload
-     *                           names the prop.
+     *                           reaches the prop.
      * @param string   $group    The batch the client loads this prop in.
      *
      * @throws InvalidArgumentException When the group is empty or whitespace only.
@@ -64,23 +61,23 @@ final class Inertia
     }
 
     /**
-     * @param array<array-key, mixed>|Closure $value An array sent as-is, or a closure invoked
-     *                                               only when the prop is resolved.
+     * @param mixed $value The value sent as-is, or a closure or invokable object called only
+     *                     when the prop is sent.
      *
      * @see ResponseFactory::merge()
      */
-    public static function merge(array|Closure $value): MergeProp
+    public static function merge(mixed $value): MergeProp
     {
         return self::factory()->merge($value);
     }
 
     /**
-     * @param array<array-key, mixed>|Closure $value An array sent as-is, or a closure invoked
-     *                                               only when the prop is resolved.
+     * @param mixed $value The value sent as-is, or a closure or invokable object called only
+     *                     when the prop is sent.
      *
      * @see ResponseFactory::deepMerge()
      */
-    public static function deepMerge(array|Closure $value): MergeProp
+    public static function deepMerge(mixed $value): MergeProp
     {
         return self::factory()->deepMerge($value);
     }
@@ -90,9 +87,6 @@ final class Inertia
      *                                           names to values to share at once.
      * @param mixed                       $value The value to share when `$key` is a
      *                                           single prop name; ignored otherwise.
-     *
-     * @throws InvalidArgumentException When a shared value is not scalar, array, `null`,
-     *                                  or `ResolvableProp`.
      *
      * @see ResponseFactory::share()
      */

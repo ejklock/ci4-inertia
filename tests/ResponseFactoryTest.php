@@ -13,18 +13,15 @@ use CodeIgniter\Test\CIUnitTestCase;
 use Config\App as AppConfig;
 use Config\Services;
 use Ejklock\Ci4Inertia\Config\Inertia as InertiaConfig;
-use Ejklock\Ci4Inertia\LazyProp;
 use Ejklock\Ci4Inertia\ResponseFactory;
-use InvalidArgumentException;
 use PHPUnit\Framework\Assert;
-use PHPUnit\Framework\Attributes\DataProvider;
 use stdClass;
 
 /**
  * Verifies `Ejklock\Ci4Inertia\ResponseFactory` against the public API in
- * docs/architecture/inertia.md (render, share, version, location) and the egress-typing
- * and performance-budget rules: shared/per-render prop precedence, the throw
- * on a non scalar/array/null/ResolvableProp prop value naming its key, the version
+ * docs/architecture/inertia.md (render, share, version, location) and the
+ * performance-budget rules: shared/per-render prop precedence, the acceptance
+ * of closure and plain-object props, the version
  * resolver invoked at most once per instance regardless of render() call or prop count,
  * and `location()`'s 409-versus-redirect branch.
  * Also covers the package's default config and the `inertia` service that builds the factory from it.
@@ -101,7 +98,7 @@ final class ResponseFactoryTest extends CIUnitTestCase
         $prop = $factory->defer(static fn (): int => 7, 'g');
 
         $this->assertSame('g', $prop->group());
-        $this->assertSame(7, $prop->resolve());
+        $this->assertSame(7, $prop());
     }
 
     public function testDeferWithoutAGroupUsesTheDefaultGroup(): void
@@ -133,47 +130,47 @@ final class ResponseFactoryTest extends CIUnitTestCase
         $this->assertArrayNotHasKey('deferredProps', $page);
     }
 
-    public function testRenderAcceptsResolvablePropValuesWithoutThrowing(): void
+    public function testRenderResolvesAClosurePropToItsReturnValue(): void
     {
         $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
 
         $page = $this->renderPageObject($factory, 'Users/Index', [
-            'counts' => new LazyProp(static fn (): array => ['open' => 3]),
+            'counts' => static fn (): array => ['open' => 3],
         ]);
 
         $this->assertSame(['open' => 3], $page['props']['counts']);
     }
 
-    #[DataProvider('provideInvalidPropValues')]
-    public function testRenderThrowsForANonScalarArrayNullOrResolvablePropValueNamingTheOffendingKey(mixed $invalidValue): void
+    public function testRenderAndShareAcceptAPlainObjectAndEncodeItAsJson(): void
     {
         $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+        $shared  = new stdClass();
 
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('offender');
+        $shared->name = 'Ada';
+        $factory->share('shared', $shared);
 
-        $factory->render('Users/Index', ['offender' => $invalidValue]);
+        $rendered       = new stdClass();
+        $rendered->size = 2;
+
+        $page = $this->renderPageObject($factory, 'Users/Index', ['rendered' => $rendered]);
+
+        $this->assertSame(['shared' => ['name' => 'Ada'], 'rendered' => ['size' => 2]], $page['props']);
     }
 
-    #[DataProvider('provideInvalidPropValues')]
-    public function testShareThrowsForANonScalarArrayNullOrResolvablePropValueNamingTheOffendingKey(mixed $invalidValue): void
+    public function testShareResolvesAClosureOnlyWhenTheRenderSendsIt(): void
     {
         $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+        $calls   = new ArrayObject();
 
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('offender');
+        $factory->share('lazy', static function () use ($calls): int {
+            $calls->append('called');
 
-        $factory->share('offender', $invalidValue);
-    }
+            return 4;
+        });
 
-    /**
-     * @return iterable<string, array{0: mixed}>
-     */
-    public static function provideInvalidPropValues(): iterable
-    {
-        yield 'a plain object' => [new stdClass()];
-
-        yield 'a raw closure not wrapped in a ResolvableProp' => [static fn (): string => 'value'];
+        $this->assertCount(0, $calls);
+        $this->assertSame(['lazy' => 4], $this->renderPageObject($factory, 'Users/Index')['props']);
+        $this->assertCount(1, $calls);
     }
 
     public function testShareBatchFormSharesEveryEntryAcrossSubsequentRenders(): void
@@ -304,7 +301,7 @@ final class ResponseFactoryTest extends CIUnitTestCase
         });
 
         $this->assertCount(0, $calls);
-        $this->assertSame([2], $prop->resolve());
+        $this->assertSame([2], $prop());
         $this->assertCount(1, $calls);
     }
 

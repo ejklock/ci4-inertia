@@ -4,112 +4,198 @@ declare(strict_types=1);
 
 namespace Ejklock\Ci4Inertia;
 
-use Closure;
 use InvalidArgumentException;
+use ReflectionClass;
 
 /**
  * Marks a prop value the client loads in a follow-up request after the first render.
  *
  * A full render leaves a `DeferProp` out of `props` without invoking its callback and lists its
- * key under the page object's `deferredProps`, grouped by name; the client then issues one
- * partial reload per group naming that group's keys. A partial reload follows the same rule as
- * `OptionalProp`: the prop is resolved and sent only when `X-Inertia-Partial-Data` names it.
+ * path under the page object's `deferredProps`, grouped by name; the client then issues one
+ * partial reload per group naming that group's paths. A partial reload resolves and sends the
+ * prop when it reaches it.
  *
- * A deferred prop is not mergeable until `merge()`, `prepend()`, `deepMerge()` or `matchOn()` is
- * called; its key is then also listed in the matching merge list, with the same meaning as for
- * `MergeProp`. Each fluent call returns a new instance.
+ * A deferred prop is not mergeable until `merge()` or `deepMerge()` is called; only those two
+ * turn merging on. `append()`, `prepend()` and `matchOn()` only shape the merge and leave a
+ * prop that is not merging out of every merge list. A merging prop is also listed in the
+ * matching merge list, with the same meaning as for `MergeProp`. The fluent methods keep
+ * Laravel's names and effects, but the prop is immutable: each call returns a new instance.
  */
-final readonly class DeferProp implements ResolvableProp
+final readonly class DeferProp implements Deferrable, IgnoreFirstLoad, Mergeable
 {
-    private Closure $callback;
+    private mixed $callback;
+    private string $group;
+    private MergeProp $merging;
+    private bool $merges;
 
     /**
-     * @param callable        $callback   Produces the prop's real value when `resolve()` is
-     *                                    called. Never invoked at construction time.
-     * @param string          $group      The name the client batches this prop's follow-up request
-     *                                    under; props sharing a group load together.
-     * @param MergeState|null $mergeState Internal, not part of the public API: set by the fluent
-     *                                    methods; `null` while the prop is not mergeable.
+     * @param callable    $callback Produces the prop's real value when the prop is invoked. Only a
+     *                              callable object (a closure or an invokable object) is called; a
+     *                              string or array callable is returned as it is, as Laravel does.
+     *                              Never called at construction time.
+     * @param string|null $group    The name the client batches this prop's follow-up request
+     *                              under; props sharing a group load together. `default` when
+     *                              `null`.
      *
      * @throws InvalidArgumentException When the group is empty or whitespace only.
      */
-    public function __construct(callable $callback, private string $group = 'default', private ?MergeState $mergeState = null)
+    public function __construct(callable $callback, ?string $group = null)
     {
-        if (trim($group) === '') {
-            throw new InvalidArgumentException('A deferred prop group must not be empty or whitespace only.');
-        }
-
-        $this->callback = $callback instanceof Closure ? $callback : Closure::fromCallable($callback);
+        $this->callback = $callback;
+        $this->group    = self::checkedGroup($group);
+        $this->merging  = new MergeProp([]);
+        $this->merges   = false;
     }
 
     /**
-     * The group the client batches this prop's follow-up request under.
+     * Resolves the deferred value: a closure or invokable object is called for it, while a
+     * string or array callable comes back unchanged.
+     *
+     * @psalm-suppress InvalidFunctionCall An object here came through the callable-typed constructor.
      */
+    public function __invoke(): mixed
+    {
+        $callback = $this->callback;
+
+        if (is_object($callback)) {
+            return $callback();
+        }
+
+        return $callback;
+    }
+
+    /**
+     * Sets the group the client batches this prop's follow-up request under.
+     *
+     * @throws InvalidArgumentException When the group is empty or whitespace only.
+     */
+    public function defer(?string $group = null): static
+    {
+        return $this->with(group: self::checkedGroup($group));
+    }
+
+    public function shouldDefer(): bool
+    {
+        return true;
+    }
+
     public function group(): string
     {
         return $this->group;
     }
 
-    /**
-     * Makes the prop mergeable by appending to the client's existing value.
-     */
-    public function merge(): self
+    public function merge(): static
     {
-        return $this->withMergeState($this->currentMergeState()->withMode(MergeMode::Append));
+        return $this->with(merges: true);
+    }
+
+    public function deepMerge(): static
+    {
+        return $this->with(merging: $this->merging->deepMerge(), merges: true);
     }
 
     /**
-     * Makes the prop mergeable by prepending to the client's existing value.
+     * @param list<string>|string $matchOn
      */
-    public function prepend(): self
+    public function matchOn(array|string $matchOn): static
     {
-        return $this->withMergeState($this->currentMergeState()->withMode(MergeMode::Prepend));
+        return $this->with(merging: $this->merging->matchOn($matchOn));
     }
 
     /**
-     * Makes the prop mergeable by deep-merging into the client's existing value.
+     * @param array<array-key, string>|bool|string $path
      */
-    public function deepMerge(): self
+    public function append(array|bool|string $path = true, ?string $matchOn = null): static
     {
-        return $this->withMergeState($this->currentMergeState()->withMode(MergeMode::Deep));
+        return $this->with(merging: $this->merging->append($path, $matchOn));
     }
 
     /**
-     * Makes the prop mergeable and sets the item fields the client dedupes array items on.
+     * @param array<array-key, string>|bool|string $path
+     */
+    public function prepend(array|bool|string $path = true, ?string $matchOn = null): static
+    {
+        return $this->with(merging: $this->merging->prepend($path, $matchOn));
+    }
+
+    public function shouldMerge(): bool
+    {
+        return $this->merges;
+    }
+
+    public function shouldDeepMerge(): bool
+    {
+        return $this->merging->shouldDeepMerge();
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function matchesOn(): array
+    {
+        return $this->merging->matchesOn();
+    }
+
+    public function appendsAtRoot(): bool
+    {
+        return $this->merging->appendsAtRoot();
+    }
+
+    public function prependsAtRoot(): bool
+    {
+        return $this->merging->prependsAtRoot();
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function appendsAtPaths(): array
+    {
+        return $this->merging->appendsAtPaths();
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function prependsAtPaths(): array
+    {
+        return $this->merging->prependsAtPaths();
+    }
+
+    /**
+     * @throws InvalidArgumentException When the group is empty or whitespace only.
+     */
+    private static function checkedGroup(?string $group): string
+    {
+        $group ??= 'default';
+
+        if (trim($group) === '') {
+            throw new InvalidArgumentException('A deferred prop group must not be empty or whitespace only.');
+        }
+
+        return $group;
+    }
+
+    /**
+     * Builds the next immutable instance. The constructor takes only Laravel's parameters, so the
+     * copy is made without it and its properties are initialised here, once, from inside the class.
      *
-     * @throws InvalidArgumentException When a field is empty or whitespace only.
+     * @psalm-suppress InaccessibleProperty The copy is a fresh instance whose readonly properties are still uninitialised.
      */
-    public function matchOn(string $field, string ...$fields): self
+    private function with(?string $group = null, ?MergeProp $merging = null, ?bool $merges = null): static
     {
-        return $this->withMergeState($this->currentMergeState()->withMatchFields([$field, ...$fields]));
-    }
+        $copy = (new ReflectionClass($this))->newInstanceWithoutConstructor();
 
-    /**
-     * @internal Read by `InertiaResponse` to build the page object's merge lists; `null` while
-     *           the prop is not mergeable.
-     */
-    public function mergeState(): ?MergeState
-    {
-        return $this->mergeState;
-    }
+        // This is the one sanctioned copy site; PHPStan only knows constructor writes.
+        // @phpstan-ignore property.readOnlyAssignNotInConstructor
+        $copy->callback = $this->callback;
+        // @phpstan-ignore property.readOnlyAssignNotInConstructor
+        $copy->group = $group ?? $this->group;
+        // @phpstan-ignore property.readOnlyAssignNotInConstructor
+        $copy->merging = $merging ?? $this->merging;
+        // @phpstan-ignore property.readOnlyAssignNotInConstructor
+        $copy->merges = $merges ?? $this->merges;
 
-    private function currentMergeState(): MergeState
-    {
-        return $this->mergeState ?? new MergeState();
-    }
-
-    private function withMergeState(MergeState $mergeState): self
-    {
-        return new self($this->callback, $this->group, $mergeState);
-    }
-
-    /**
-     * Invokes the wrapped callback and returns its result.
-     *
-     * @return mixed The resolved prop value, in whatever shape the wrapped callback returns.
-     */
-    public function resolve(): mixed
-    {
-        return ($this->callback)();
+        return $copy;
     }
 }

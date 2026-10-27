@@ -7,6 +7,7 @@ namespace Ejklock\Ci4Inertia;
 use Closure;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\ResponseInterface;
+use Ejklock\Ci4Inertia\Support\Header;
 use InvalidArgumentException;
 
 /**
@@ -14,9 +15,9 @@ use InvalidArgumentException;
  * for a page, `defer()` for a prop the client loads afterwards, `merge()` and `deepMerge()` for a
  * prop the client combines with its current value, `share()` for props carried across every render on this instance, `version()`
  * to override how the asset version is resolved, and `location()` to answer a stale-asset
- * reload. The props array is treated as an egress channel — only a scalar,
- * array, `null`, or `ResolvableProp` value may cross it, so a controller must state what
- * leaves the server rather than hand over an entity by accident.
+ * reload. A prop value is a scalar, an array, `null`, a closure or invokable object called only
+ * when the prop is sent, a `JsonSerializable` object, or one of the prop classes; any other
+ * object is encoded as JSON by the response.
  */
 final class ResponseFactory
 {
@@ -68,16 +69,11 @@ final class ResponseFactory
      * Builds the page response for one component: shared props merged with this
      * render's props, the latter winning on key collision.
      *
-     * @param array<string, mixed> $props Per-render props, each a scalar, array, `null`,
-     *                                    or `ResolvableProp`.
-     *
-     * @throws InvalidArgumentException When a prop value is none of those shapes; the
-     *                                  message names the offending key.
+     * @param array<string, mixed> $props Per-render props; a closure or invokable object is
+     *                                    called only when the prop is sent.
      */
     public function render(string $component, array $props = []): InertiaResponse
     {
-        $this->assertValidPropValues($props);
-
         $merged = [...$this->sharedProps, ...$props];
 
         return new InertiaResponse(
@@ -118,7 +114,7 @@ final class ResponseFactory
      * together in one request.
      *
      * @param callable $callback Produces the prop's value; invoked only when a partial reload
-     *                           names the prop.
+     *                           reaches the prop.
      * @param string   $group    The batch the client loads this prop in.
      *
      * @throws InvalidArgumentException When the group is empty or whitespace only.
@@ -133,10 +129,10 @@ final class ResponseFactory
      * pass the result as a prop value to `render()` or `share()`. Chain `prepend()`,
      * `deepMerge()` or `matchOn()` on it to change how the client combines the value.
      *
-     * @param array<array-key, mixed>|Closure $value An array sent as-is, or a closure invoked
-     *                                               only when the prop is resolved.
+     * @param mixed $value The value sent as-is, or a closure or invokable object called only
+     *                     when the prop is sent.
      */
-    public function merge(array|Closure $value): MergeProp
+    public function merge(mixed $value): MergeProp
     {
         return new MergeProp($value);
     }
@@ -145,10 +141,10 @@ final class ResponseFactory
      * Marks a prop the client deep-merges into the value it already holds instead of
      * replacing it: pass the result as a prop value to `render()` or `share()`.
      *
-     * @param array<array-key, mixed>|Closure $value An array sent as-is, or a closure invoked
-     *                                               only when the prop is resolved.
+     * @param mixed $value The value sent as-is, or a closure or invokable object called only
+     *                     when the prop is sent.
      */
-    public function deepMerge(array|Closure $value): MergeProp
+    public function deepMerge(mixed $value): MergeProp
     {
         return (new MergeProp($value))->deepMerge();
     }
@@ -162,16 +158,10 @@ final class ResponseFactory
      *                                           names to values to share at once.
      * @param mixed                       $value The value to share when `$key` is a
      *                                           single prop name; ignored otherwise.
-     *
-     * @throws InvalidArgumentException When a shared value is not scalar, array, `null`,
-     *                                  or `ResolvableProp`; the message names the
-     *                                  offending key.
      */
     public function share(array|string $key, mixed $value = null): void
     {
         $additions = is_array($key) ? $key : [$key => $value];
-
-        $this->assertValidPropValues($additions);
 
         $this->sharedProps = [...$this->sharedProps, ...$additions];
     }
@@ -198,10 +188,10 @@ final class ResponseFactory
      */
     public function location(string $url): ResponseInterface
     {
-        if ($this->request->hasHeader('X-Inertia')) {
+        if ($this->request->hasHeader(Header::INERTIA)) {
             return response()
                 ->setStatusCode(409)
-                ->setHeader('X-Inertia-Location', $url);
+                ->setHeader(Header::LOCATION, $url);
         }
 
         return redirect()->to($url);
@@ -227,45 +217,6 @@ final class ResponseFactory
         $session->remove(self::CLEAR_HISTORY_SESSION_KEY);
 
         return true;
-    }
-
-    /**
-     * Asserts every value in `$props` is a scalar, array, `null`, or `ResolvableProp`;
-     * throws naming the first offending key.
-     *
-     * @param array<string, mixed> $props The prop map to validate, keyed by prop name.
-     *
-     * @throws InvalidArgumentException When a value is none of the allowed shapes; the
-     *                                  message names the offending key.
-     */
-    private function assertValidPropValues(array $props): void
-    {
-        foreach ($props as $key => $value) {
-            if (! $this->isValidPropValue($value)) {
-                throw new InvalidArgumentException(sprintf(
-                    'Inertia prop "%s" must be a scalar, array, null, or ResolvableProp, %s given.',
-                    $key,
-                    get_debug_type($value),
-                ));
-            }
-        }
-    }
-
-    /**
-     * Reports whether `$value` is one of the shapes allowed to cross the props egress
-     * channel.
-     *
-     * @param mixed $value The candidate prop value to check.
-     *
-     * @return bool `true` when `$value` is a scalar, array, `null`, or `ResolvableProp`;
-     *              `false` otherwise.
-     */
-    private function isValidPropValue(mixed $value): bool
-    {
-        return $value === null
-            || is_scalar($value)
-            || is_array($value)
-            || $value instanceof ResolvableProp;
     }
 
     /**

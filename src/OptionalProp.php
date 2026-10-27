@@ -4,36 +4,35 @@ declare(strict_types=1);
 
 namespace Ejklock\Ci4Inertia;
 
-use Closure;
-
 /**
- * Marks a prop value that is sent only when a partial reload names it.
+ * Marks a prop value that is sent only when a partial reload reaches it.
  *
- * Unlike `LazyProp`, which a full render still resolves and sends, an `OptionalProp` is left
- * out of a full render and of any partial reload that does not name it in
- * `X-Inertia-Partial-Data`, and its callback is never invoked there. A page uses it for data
- * that is costly or can fail and that the client asks for when it needs it.
+ * An `OptionalProp` is left out of a full render, and its callback is never invoked there. A
+ * page uses it for data that is costly or can fail and that the client asks for when it
+ * needs it.
  */
-final readonly class OptionalProp implements ResolvableProp
+final readonly class OptionalProp implements IgnoreFirstLoad
 {
-    private Closure $callback;
+    private mixed $callback;
 
     /**
-     * @param callable $callback Produces the prop's real value when `resolve()` is
-     *                           called. Never invoked at construction time.
+     * @param callable $callback Produces the prop's real value when the prop is invoked. Only a
+     *                           callable object (a closure or an invokable object) is called; a
+     *                           string or array callable is returned as it is, as Laravel does.
+     *                           Never called at construction time.
      */
     public function __construct(callable $callback)
     {
-        $this->callback = $callback instanceof Closure ? $callback : Closure::fromCallable($callback);
+        $this->callback = $callback;
     }
 
     /**
-     * Invokes the wrapped callback and returns its result.
+     * Calls the wrapped callback when it is a callable object and returns its result.
      *
-     * @return mixed The resolved prop value, in whatever shape the wrapped callback returns.
+     * @psalm-suppress InvalidFunctionCall The constructor only accepts callables, so an object here is one.
      */
-    public function resolve(): mixed
+    public function __invoke(): mixed
     {
-        return ($this->callback)();
+        return is_object($this->callback) ? ($this->callback)() : $this->callback;
     }
 }

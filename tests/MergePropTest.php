@@ -12,12 +12,10 @@ use CodeIgniter\Test\CIUnitTestCase;
 use Config\App as AppConfig;
 use Ejklock\Ci4Inertia\DeferProp;
 use Ejklock\Ci4Inertia\InertiaResponse;
-use Ejklock\Ci4Inertia\MergeMode;
 use Ejklock\Ci4Inertia\MergeProp;
-use Ejklock\Ci4Inertia\MergeState;
-use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
-use TypeError;
+use ReflectionClass;
+use ReflectionParameter;
 
 /**
  * Verifies `MergeProp`: its resolution, its immutable mode switching, and the merge lists
@@ -59,7 +57,7 @@ final class MergePropTest extends CIUnitTestCase
         return array_intersect_key($page, array_flip(['mergeProps', 'prependProps', 'deepMergeProps', 'matchPropsOn']));
     }
 
-    public function testResolveReturnsAnArrayAsIsAndInvokesAClosureOnlyOnResolve(): void
+    public function testInvokeReturnsAnArrayAsIsAndCallsAClosureOnlyWhenInvoked(): void
     {
         $calls = new ArrayObject();
         $lazy  = new MergeProp(static function () use ($calls): array {
@@ -68,9 +66,9 @@ final class MergePropTest extends CIUnitTestCase
             return [3];
         });
 
-        $this->assertSame([1, 2], (new MergeProp([1, 2]))->resolve());
+        $this->assertSame([1, 2], (new MergeProp([1, 2]))());
         $this->assertCount(0, $calls);
-        $this->assertSame([3], $lazy->resolve());
+        $this->assertSame([3], $lazy());
         $this->assertCount(1, $calls);
     }
 
@@ -82,7 +80,7 @@ final class MergePropTest extends CIUnitTestCase
             'feed'     => (new MergeProp(static fn (): array => [9]))->prepend(),
             'settings' => (new MergeProp(['k' => 1]))->deepMerge(),
             'posts'    => (new MergeProp([4]))->matchOn('id'),
-            'tags'     => (new MergeProp([5]))->prepend()->matchOn('id', 'slug'),
+            'tags'     => (new MergeProp([5]))->prepend()->matchOn(['id', 'slug']),
         ]);
 
         $this->assertSame([1, 2], $page['props']['users']);
@@ -116,13 +114,156 @@ final class MergePropTest extends CIUnitTestCase
         $this->assertSame(['mergeProps' => ['p']], $this->mergeLists($this->renderPage(['p' => $original])));
     }
 
-    public function testTheLastModeCallWins(): void
+    public function testDeepMergeWinsOverPrependWhateverTheCallOrder(): void
     {
-        $deep    = $this->renderPage(['p' => (new MergeProp([1]))->prepend()->deepMerge()]);
-        $prepend = $this->renderPage(['p' => (new MergeProp([1]))->deepMerge()->prepend()]);
+        $before = $this->renderPage(['p' => (new MergeProp([1]))->prepend()->deepMerge()]);
+        $after  = $this->renderPage(['p' => (new MergeProp([1]))->deepMerge()->prepend()]);
 
-        $this->assertSame(['deepMergeProps' => ['p']], $this->mergeLists($deep));
-        $this->assertSame(['prependProps' => ['p']], $this->mergeLists($prepend));
+        $this->assertSame(['deepMergeProps' => ['p']], $this->mergeLists($before));
+        $this->assertSame(['deepMergeProps' => ['p']], $this->mergeLists($after));
+    }
+
+    public function testEveryFluentCallReturnsANewInstanceAndLeavesTheOriginalUnchanged(): void
+    {
+        $original = new MergeProp([1]);
+
+        $calls = [
+            $original->deepMerge(),
+            $original->matchOn('id'),
+            $original->append('data', 'id'),
+            $original->prepend('data'),
+            $original->prepend(),
+            $original->merge(),
+        ];
+
+        foreach ($calls as $changed) {
+            $this->assertNotSame($original, $changed);
+        }
+
+        $this->assertFalse($original->shouldDeepMerge());
+        $this->assertSame([], $original->matchesOn());
+        $this->assertSame([], $original->appendsAtPaths());
+        $this->assertSame([], $original->prependsAtPaths());
+        $this->assertTrue($original->appendsAtRoot());
+    }
+
+    public function testEveryFluentCallOnADeferPropReturnsANewInstanceAndLeavesTheOriginalUnmerged(): void
+    {
+        $original = new DeferProp(static fn (): int => 1, 'sidebar');
+
+        foreach ([$original->merge(), $original->deepMerge(), $original->matchOn('id'), $original->append('d'), $original->prepend(), $original->defer('other')] as $changed) {
+            $this->assertNotSame($original, $changed);
+        }
+
+        $this->assertFalse($original->shouldMerge());
+        $this->assertSame('sidebar', $original->group());
+        $this->assertSame('sidebar', $original->merge()->deepMerge()->matchOn('id')->group());
+        $this->assertSame('other', $original->defer('other')->merge()->group());
+    }
+
+    public function testPathsAccumulateSeparatelyPerDirectionAndLeaveTheRoot(): void
+    {
+        $prop = (new MergeProp([1]))->append('a')->append('b')->prepend('c')->prepend('d');
+
+        $this->assertSame(['a', 'b'], $prop->appendsAtPaths());
+        $this->assertSame(['c', 'd'], $prop->prependsAtPaths());
+        $this->assertFalse($prop->appendsAtRoot());
+        $this->assertFalse($prop->prependsAtRoot());
+    }
+
+    public function testAReversedRootDirectionWithPathsIsNeitherRootDirection(): void
+    {
+        $prop = (new MergeProp([1]))->append(false)->append('x');
+
+        $this->assertFalse($prop->prependsAtRoot());
+        $this->assertFalse($prop->appendsAtRoot());
+    }
+
+    public function testPrependPathsDoNotTouchTheAppendPaths(): void
+    {
+        $prop = (new MergeProp([1]))->prepend('c');
+
+        $this->assertSame([], $prop->appendsAtPaths());
+        $this->assertSame(['c'], $prop->prependsAtPaths());
+    }
+
+    public function testPathMatchFieldsAccumulateAfterAnExistingMatchOn(): void
+    {
+        $prop = (new MergeProp([1]))->matchOn('x')->append('data', 'id')->prepend('meta', 'uuid');
+
+        $this->assertSame(['x', 'data.id', 'meta.uuid'], $prop->matchesOn());
+    }
+
+    public function testABlankPathMatchFieldAddsNoMatch(): void
+    {
+        $this->assertSame([], (new MergeProp([1]))->append('data', '')->matchesOn());
+        $this->assertSame([], (new MergeProp([1]))->prepend('data', '')->matchesOn());
+    }
+
+    public function testBooleanDirectionsSetTheRootDirection(): void
+    {
+        $this->assertTrue((new MergeProp([1]))->prepend()->prependsAtRoot());
+        $this->assertTrue((new MergeProp([1]))->append(false)->prependsAtRoot());
+        $this->assertTrue((new MergeProp([1]))->prepend(false)->appendsAtRoot());
+        $this->assertTrue((new MergeProp([1]))->prepend()->append()->appendsAtRoot());
+    }
+
+    public function testADeferPropFollowsTheSameDirectionDefaults(): void
+    {
+        $prop = new DeferProp(static fn (): int => 1);
+
+        $this->assertTrue($prop->merge()->prepend()->prependsAtRoot());
+        $this->assertTrue($prop->merge()->prepend()->append()->appendsAtRoot());
+        $this->assertFalse($prop->shouldMerge());
+        $this->assertFalse($prop->shouldDeepMerge());
+        $this->assertTrue($prop->deepMerge()->shouldMerge());
+    }
+
+    public function testThePublicConstructorsTakeOnlyTheParametersTheyDocument(): void
+    {
+        $merge = (new ReflectionClass(MergeProp::class))->getConstructor();
+        $defer = (new ReflectionClass(DeferProp::class))->getConstructor();
+
+        $this->assertSame(['value'], array_map(static fn (ReflectionParameter $p): string => $p->getName(), $merge?->getParameters() ?? []));
+        $this->assertSame(['callback', 'group'], array_map(static fn (ReflectionParameter $p): string => $p->getName(), $defer?->getParameters() ?? []));
+    }
+
+    public function testAMergePropIsMergedOnConstructionAndADeferPropOnlyAfterMerge(): void
+    {
+        $this->assertTrue((new MergeProp([1]))->shouldMerge());
+        $this->assertFalse((new DeferProp(static fn (): int => 1))->shouldMerge());
+        $this->assertTrue((new DeferProp(static fn (): int => 1))->merge()->shouldMerge());
+    }
+
+    /**
+     * @param list<string> $expected
+     */
+    #[DataProvider('provideAPathMatchFieldIsRecordedOnlyWhenTruthy')]
+    public function testAPathMatchFieldIsRecordedOnlyWhenTruthy(?string $field, array $expected): void
+    {
+        $this->assertSame($expected, (new MergeProp([1]))->append('data', $field)->matchesOn());
+        $this->assertSame($expected, (new MergeProp([1]))->prepend('data', $field)->matchesOn());
+    }
+
+    /**
+     * @return iterable<string, array{?string, list<string>}>
+     */
+    public static function provideAPathMatchFieldIsRecordedOnlyWhenTruthy(): iterable
+    {
+        yield 'a field' => ['id', ['data.id']];
+
+        yield 'the string zero' => ['0', []];
+
+        yield 'an empty string' => ['', []];
+
+        yield 'no field' => [null, []];
+    }
+
+    public function testMatchOnWithoutMergeLeavesADeferPropOutOfEveryMergeList(): void
+    {
+        $page = $this->renderPage(['stats' => (new DeferProp(static fn (): int => 1))->matchOn('id')]);
+
+        $this->assertSame([], $this->mergeLists($page));
     }
 
     public function testMatchFieldsSurviveALaterModeCall(): void
@@ -132,78 +273,11 @@ final class MergePropTest extends CIUnitTestCase
         $this->assertSame(['deepMergeProps' => ['p'], 'matchPropsOn' => ['p.id']], $this->mergeLists($page));
     }
 
-    #[DataProvider('provideMatchOnRejectsABlankField')]
-    public function testMatchOnRejectsABlankField(string $field, string ...$more): void
+    public function testMatchOnTakesAListOfFields(): void
     {
-        $this->expectException(InvalidArgumentException::class);
+        $page = $this->renderPage(['p' => (new MergeProp([1]))->matchOn(['id', 'slug'])]);
 
-        (new MergeProp([1]))->matchOn($field, ...$more);
-    }
-
-    public static function provideMatchOnRejectsABlankField(): iterable
-    {
-        yield 'empty' => [''];
-
-        yield 'whitespace after a valid field' => ['id', '  '];
-    }
-
-    /**
-     * @param array<array-key, mixed> $fields
-     */
-    #[DataProvider('provideMergeStateRejectsInvalidMatchFields')]
-    public function testMergeStateRejectsInvalidMatchFields(array $fields): void
-    {
-        $this->expectException(InvalidArgumentException::class);
-
-        new MergeState(MergeMode::Append, $fields);
-    }
-
-    public static function provideMergeStateRejectsInvalidMatchFields(): iterable
-    {
-        yield 'empty field' => [['']];
-
-        yield 'whitespace field' => [['id', '  ']];
-
-        yield 'string keys' => [['a' => 'id']];
-
-        yield 'gapped list' => [[1 => 'id']];
-
-        yield 'non-string field' => [[7]];
-    }
-
-    public function testMatchOnRejectsABlankFieldOnADeferPropToo(): void
-    {
-        $this->expectException(InvalidArgumentException::class);
-
-        (new DeferProp(static fn (): int => 1))->matchOn('');
-    }
-
-    /**
-     * @psalm-suppress InvalidArgument the string is the invalid input under test
-     */
-    public function testAStringMergeModeIsATypeError(): void
-    {
-        $this->expectException(TypeError::class);
-
-        new MergeProp([1], 'append'); // @phpstan-ignore argument.type
-    }
-
-    /**
-     * @psalm-suppress InvalidArgument the string is the invalid input under test
-     */
-    public function testAStringMergeModeOnADeferPropIsATypeError(): void
-    {
-        $this->expectException(TypeError::class);
-
-        new DeferProp(static fn (): int => 1, 'g', 'deep'); // @phpstan-ignore argument.type
-    }
-
-    public function testMergeStateKeepsAValidListOfFields(): void
-    {
-        $state = new MergeState(MergeMode::Deep, ['id', 'slug']);
-
-        $this->assertSame(MergeMode::Deep, $state->mode);
-        $this->assertSame(['id', 'slug'], $state->matchFields);
+        $this->assertSame(['mergeProps' => ['p'], 'matchPropsOn' => ['p.id', 'p.slug']], $this->mergeLists($page));
     }
 
     public function testIntegerLikeKeyIsLeftOutOfEveryListWhenResetButStillSent(): void
@@ -241,7 +315,7 @@ final class MergePropTest extends CIUnitTestCase
         $this->assertSame(['prependProps' => ['feed']], $this->mergeLists($page));
     }
 
-    public function testResetHeaderWithSpacesRemovesEveryNamedKeyAndItsMatchFields(): void
+    public function testResetHeaderNamesAreNotTrimmedSoAnItemWithALeadingSpaceResetsNothing(): void
     {
         $page = $this->renderPage(
             [
@@ -250,6 +324,23 @@ final class MergePropTest extends CIUnitTestCase
                 'posts' => (new MergeProp([3]))->matchOn('id'),
             ],
             ['X-Inertia-Reset' => 'users, posts'],
+        );
+
+        $this->assertSame(
+            ['mergeProps' => ['posts'], 'prependProps' => ['feed'], 'matchPropsOn' => ['posts.id']],
+            $this->mergeLists($page),
+        );
+    }
+
+    public function testResetHeaderNamesEveryKeyAndItsMatchFieldsWhenCommaSeparated(): void
+    {
+        $page = $this->renderPage(
+            [
+                'users' => new MergeProp([1]),
+                'feed'  => (new MergeProp([2]))->prepend(),
+                'posts' => (new MergeProp([3]))->matchOn('id'),
+            ],
+            ['X-Inertia-Reset' => 'users,posts'],
         );
 
         $this->assertSame(['prependProps' => ['feed']], $this->mergeLists($page));

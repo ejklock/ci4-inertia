@@ -4,38 +4,34 @@ declare(strict_types=1);
 
 namespace Ejklock\Ci4Inertia;
 
-use Closure;
-
 /**
- * Marks a prop value whose key always survives partial-reload filtering, even when named
- * in `X-Inertia-Partial-Except` or omitted from `X-Inertia-Partial-Data`.
+ * Marks a prop value that is sent on every response, even when a partial reload names other
+ * props or lists it in `X-Inertia-Partial-Except`.
  *
  * `errors` is shared this way precisely so a partial reload that neither requested nor
- * named it still receives it. `InertiaResponse` unions every
- * `AlwaysProp` key into the requested-key set before filtering, then resolves it through
- * the same `ResolvableProp` path as a `LazyProp`.
+ * named it still receives it.
  */
-final readonly class AlwaysProp implements ResolvableProp
+final readonly class AlwaysProp
 {
-    private Closure $callback;
-
     /**
-     * @param callable $callback Produces the prop's real value when `resolve()` is
-     *                           called. Never invoked at construction time.
+     * @param mixed $source What the prop sends; a callable object is called only when the prop
+     *                      is resolved, anything else is sent as it is.
      */
-    public function __construct(callable $callback)
+    public function __construct(private mixed $source)
     {
-        $this->callback = $callback instanceof Closure ? $callback : Closure::fromCallable($callback);
     }
 
     /**
-     * Invokes the wrapped callback and returns its result.
-     *
-     * @return mixed The resolved prop value, in whatever shape the wrapped callback
-     *               returns.
+     * Calls the source when it is a callable object, otherwise returns it untouched.
      */
-    public function resolve(): mixed
+    public function __invoke(): mixed
     {
-        return ($this->callback)();
+        $source = $this->source;
+
+        if (is_object($source) && is_callable($source)) {
+            return $source();
+        }
+
+        return $source;
     }
 }
