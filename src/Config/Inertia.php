@@ -81,6 +81,50 @@ class Inertia extends BaseConfig
     public array $pageExtensions = ['js', 'jsx', 'svelte', 'ts', 'tsx', 'vue'];
 
     /**
+     * Whether pages are sent to an Inertia SSR server to be rendered ahead of the client.
+     */
+    public bool $ssrEnabled = true;
+
+    /**
+     * The base URL of the production SSR server.
+     */
+    public string $ssrUrl = 'http://127.0.0.1:13714';
+
+    /**
+     * The base URL of the development SSR server; when set it wins over the contents of
+     * `$ssrHotFile` while that file exists.
+     */
+    public ?string $ssrHotUrl = null;
+
+    /**
+     * The file whose existence means the development server is running and whose contents are
+     * its base URL.
+     */
+    public string $ssrHotFile = FCPATH . 'hot';
+
+    /**
+     * The seconds to wait for the SSR server; null or 0 keeps the default of 30. Connecting is
+     * always limited to 10 seconds.
+     */
+    public ?int $ssrTimeout = null;
+
+    /**
+     * Whether a page is rendered on the server only when an SSR bundle exists (skipped in hot mode).
+     */
+    public bool $ssrEnsureBundleExists = true;
+
+    /**
+     * The path of the SSR bundle, tried before the default locations.
+     */
+    public ?string $ssrBundle = null;
+
+    /**
+     * Whether a failed server render throws `Ejklock\Ci4Inertia\Ssr\SsrException` instead of
+     * falling back to client rendering.
+     */
+    public bool $ssrThrowOnError = false;
+
+    /**
      * Resolves the asset version sent on every page object. A client whose
      * `X-Inertia-Version` differs from this value is running assets from a previous deploy
      * and is forced into a hard reload rather than fed data from the new backend.
