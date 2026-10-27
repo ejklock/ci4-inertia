@@ -14,7 +14,8 @@ use PHPUnit\Framework\Assert;
 
 /**
  * For a test case: assert on the Inertia page a response carried, whether the Inertia JSON
- * (`X-Inertia: true`) or the HTML first-visit shell holding the page in a `data-page` attribute.
+ * (`X-Inertia: true`) or the HTML first-visit shell holding the page in a
+ * `<script data-page type="application/json">` element.
  */
 trait InertiaTestTrait
 {
@@ -59,8 +60,9 @@ trait InertiaTestTrait
 
             try {
                 $document = new DOMDocument();
-                $document->loadHTML($html);
-                $node = (new DOMXPath($document))->query('//*[@data-page]')->item(0);
+                // The prefix makes libxml read UTF-8 even when the document declares no charset.
+                $document->loadHTML('<?xml encoding="UTF-8">' . $html);
+                $node = (new DOMXPath($document))->query('//script[@data-page][@type="application/json"]')->item(0);
             } finally {
                 libxml_clear_errors();
                 libxml_use_internal_errors($previous);
@@ -68,10 +70,10 @@ trait InertiaTestTrait
         }
 
         if (! $node instanceof DOMElement) {
-            Assert::fail('The response is not an Inertia response: it has no X-Inertia header and no data-page attribute.');
+            Assert::fail('The response is not an Inertia response: it has no X-Inertia header and no script tag with a data-page attribute and type application/json.');
         }
 
-        return $node->getAttribute('data-page');
+        return $node->textContent;
     }
 
     /**

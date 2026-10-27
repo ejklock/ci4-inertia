@@ -16,8 +16,8 @@ use CodeIgniter\Config\BaseConfig;
 class Inertia extends BaseConfig
 {
     /**
-     * The view rendered for a non-Inertia visit; it receives the page object as JSON in
-     * its `page` variable and places it, HTML-attribute-escaped, in a `data-page` attribute.
+     * The view rendered for a non-Inertia visit; it receives the page object as an
+     * array in its `page` variable and prints it with `inertia_app($page)`.
      */
     public string $rootView = 'app';
 

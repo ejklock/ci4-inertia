@@ -10,8 +10,8 @@ use CodeIgniter\HTTP\ResponseInterface;
 /**
  * Produces the Inertia page object for one render and picks the wire
  * representation: the JSON body an Inertia-aware request receives, or the HTML
- * shell that embeds the same object in `data-page` for a first visit or a hard
- * reload. An instance is immutable and single-use — build one per `render()`
+ * shell that embeds the same object in a `script` tag, printed by the `inertia_app()`
+ * helper, for a first visit or a hard reload. An instance is immutable and single-use — build one per `render()`
  * call.
  */
 final readonly class InertiaResponse
@@ -322,16 +322,17 @@ final readonly class InertiaResponse
     }
 
     /**
-     * Renders the root view shell with the page object embedded, HTML-attribute-escaped,
-     * in `data-page` — the entry point for a first visit or a hard reload.
+     * Renders the root view with the page object in its `page` variable; the view prints it
+     * as a JSON script tag through `inertia_app()` — the entry point for a first visit or a
+     * hard reload.
      *
      * @param array{component: string, props: array<string, mixed>, url: string, version: string, deferredProps?: object, mergeProps?: list<string>, prependProps?: list<string>, deepMergeProps?: list<string>, matchPropsOn?: list<string>, encryptHistory?: true, clearHistory?: true} $page The page object built by `buildPageObject()`.
      */
     private function asHtml(ResponseInterface $response, array $page): ResponseInterface
     {
-        $html = view($this->rootView, [
-            'page' => json_encode($page, JSON_THROW_ON_ERROR),
-        ]);
+        helper('inertia');
+
+        $html = view($this->rootView, ['page' => $page]);
 
         return $response->setBody($html);
     }

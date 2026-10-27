@@ -308,9 +308,9 @@ final class InertiaFilterTest extends CIUnitTestCase
         $result = $this->get('/page');
 
         $result->assertStatus(200);
-        $this->assertSame(1, preg_match('/data-page="([^"]*)"/', (string) $result->response()->getBody(), $matches));
+        $this->assertSame(1, preg_match('#<script data-page="app" type="application/json">(.*?)</script>#s', (string) $result->response()->getBody(), $matches));
 
-        $page = json_decode(html_entity_decode($matches[1]), true, flags: JSON_THROW_ON_ERROR);
+        $page = json_decode($matches[1], true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertSame('from-hook', $page['version']);
     }

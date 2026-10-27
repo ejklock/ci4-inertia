@@ -68,13 +68,33 @@ final class InertiaTestTraitTest extends CIUnitTestCase
         $this->assertSame($page, $page->component('Users/Index')->url('/users')->version('v1')->where('title', 'Users')->has('users', 1));
     }
 
-    public function testHtmlEntitiesInPropsAreDecodedToTheOriginalString(): void
+    public function testMarkupCharactersInPropsAreDecodedToTheOriginalString(): void
     {
         $original = '<script>alert("x") & \'y\'</script>';
 
         $page = $this->assertInertia($this->inertiaResult(false, ['note' => $original]));
 
         $this->assertSame($page, $page->where('note', $original));
+    }
+
+    public function testNonAsciiPropsDecodeWhenTheDocumentDeclaresNoCharset(): void
+    {
+        $page = $this->assertInertia($this->plainResult(
+            '<html><body><script data-page="app" type="application/json">{"component":"A","props":{"word":"ação"},"url":"/","version":""}</script><div id="app"></div></body></html>',
+            'text/html',
+        ));
+
+        $this->assertSame($page, $page->where('word', 'ação'));
+    }
+
+    public function testNonAsciiPropsDecodeWhenTheDocumentDeclaresUtf8(): void
+    {
+        $page = $this->assertInertia($this->plainResult(
+            '<html><head><meta charset="utf-8"></head><body><script data-page="app" type="application/json">{"component":"A","props":{"word":"ação"},"url":"/","version":""}</script><div id="app"></div></body></html>',
+            'text/html',
+        ));
+
+        $this->assertSame($page, $page->where('word', 'ação'));
     }
 
     public function testPlainJsonWithoutInertiaHeaderIsNotAnInertiaResponse(): void
@@ -87,12 +107,36 @@ final class InertiaTestTraitTest extends CIUnitTestCase
         $this->assertInertia($this->plainResult($json, 'application/json'));
     }
 
-    public function testHtmlWithoutDataPageFails(): void
+    public function testHtmlWithoutThePageScriptFails(): void
     {
         $this->expectException(AssertionFailedError::class);
-        $this->expectExceptionMessage('data-page');
+        $this->expectExceptionMessage('script');
 
         $this->assertInertia($this->plainResult('<html><body><div id="app"></div></body></html>', 'text/html'));
+    }
+
+    public function testAScriptOfAnotherTypeIsNotAnInertiaResponse(): void
+    {
+        $this->assertNotInertiaResponse($this->plainResult(
+            '<script data-page="app" type="text/javascript">{"component":"A","props":{},"url":"/","version":""}</script>',
+            'text/html',
+        ));
+    }
+
+    public function testTheOldDataPageAttributeIsNotAnInertiaResponse(): void
+    {
+        $page = '{"component":"A","props":{},"url":"/","version":""}';
+
+        $this->assertNotInertiaResponse($this->plainResult('<div id="app" data-page="' . esc($page, 'attr') . '"></div>', 'text/html'));
+    }
+
+    public function testAnEmptyBodyFailureNamesTheHeaderAndTheScriptTag(): void
+    {
+        $this->expectException(AssertionFailedError::class);
+        $this->expectExceptionMessage('X-Inertia header');
+        $this->expectExceptionMessage('script');
+
+        $this->assertInertia($this->plainResult('', 'text/html'));
     }
 
     private function assertNotInertiaResponse(TestResponse $result): void
@@ -135,7 +179,7 @@ final class InertiaTestTraitTest extends CIUnitTestCase
         $this->expectException(AssertionFailedError::class);
         $this->expectExceptionMessage('JSON');
 
-        $this->assertInertia($this->plainResult('<div data-page="{not json"></div>', 'text/html'));
+        $this->assertInertia($this->plainResult('<script data-page="app" type="application/json">{not json</script>', 'text/html'));
     }
 
     public function testInertiaJsonBodyThatIsNotAnObjectFailsAsAssertion(): void
@@ -159,7 +203,7 @@ final class InertiaTestTraitTest extends CIUnitTestCase
             'deferredProps' => ['default' => ['stats']],
         ]);
 
-        $result = $this->plainResult('<div data-page="' . esc((string) $page, 'attr') . '"></div>', 'text/html');
+        $result = $this->plainResult('<script data-page="app" type="application/json">' . $page . '</script><div id="app"></div>', 'text/html');
 
         $this->assertSame(['default' => ['stats']], $this->assertInertia($result)->page()['deferredProps']);
     }

@@ -1,4 +1,4 @@
-<?php /** @var string $page */ ?>
+<?php /** @var array<string, mixed> $page */ ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6,6 +6,6 @@
     <title>Inertia test shell</title>
 </head>
 <body>
-<div id="app" data-page="<?= esc($page, 'attr') ?>"></div>
+<?= inertia_app($page) ?>
 </body>
 </html>

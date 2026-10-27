@@ -59,11 +59,11 @@ final class InertiaResponseTest extends CIUnitTestCase
     /**
      * @return array<string, mixed>
      */
-    private function decodeDataPageAttribute(string $html): array
+    private function decodePageScript(string $html): array
     {
-        preg_match('/data-page="([^"]*)"/', $html, $matches);
+        $this->assertSame(1, preg_match('#<script data-page="app" type="application/json">(.*?)</script>#s', $html, $matches));
 
-        return json_decode(html_entity_decode($matches[1], ENT_QUOTES | ENT_HTML5), true, flags: JSON_THROW_ON_ERROR);
+        return json_decode($matches[1], true, flags: JSON_THROW_ON_ERROR);
     }
 
     public function testNonInertiaRequestRendersHtmlShellWithDataPageKeys(): void
@@ -73,7 +73,7 @@ final class InertiaResponseTest extends CIUnitTestCase
         $response = $inertia->toResponse($this->makeRequest('users'), $this->makeResponse());
         $html     = (string) $response->getBody();
 
-        $page = $this->decodeDataPageAttribute($html);
+        $page = $this->decodePageScript($html);
 
         $this->assertSame(['component', 'props', 'url', 'version'], array_keys($page));
         $this->assertSame('Users/Index', $page['component']);
@@ -410,7 +410,7 @@ final class InertiaResponseTest extends CIUnitTestCase
             ->toResponse($request, $this->makeResponse());
         $page = $inertia
             ? json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR)
-            : $this->decodeDataPageAttribute((string) $response->getBody());
+            : $this->decodePageScript((string) $response->getBody());
 
         return ['page' => $page, 'invoked' => $invoked];
     }
@@ -603,7 +603,7 @@ final class InertiaResponseTest extends CIUnitTestCase
 
         $response = (new InertiaResponse('Users/Index', $props, 'v1', self::SHELL_VIEW))
             ->toResponse($this->makeRequest('users'), $this->makeResponse());
-        $page = $this->decodeDataPageAttribute((string) $response->getBody());
+        $page = $this->decodePageScript((string) $response->getBody());
 
         $this->assertSame([1, 2], $page['props']['users']);
         $this->assertSame([9], $page['props']['feed']);
@@ -695,7 +695,7 @@ final class InertiaResponseTest extends CIUnitTestCase
         $this->assertArrayNotHasKey('mergeProps', $this->renderWithMergeableDeferProp($original, [])['page']);
     }
 
-    public function testAttributeEscapingPreventsBreakingOutOfDataPageAttribute(): void
+    public function testHostileMarkupInAPropCannotBreakOutOfTheScriptTag(): void
     {
         $hostileValue = '"><script>alert(1)</script>&\'';
 
@@ -705,10 +705,49 @@ final class InertiaResponseTest extends CIUnitTestCase
         $html     = (string) $response->getBody();
 
         $this->assertStringNotContainsString('<script>alert(1)', $html);
+        $this->assertSame(1, substr_count($html, '</script>'));
 
-        $page = $this->decodeDataPageAttribute($html);
+        $page = $this->decodePageScript($html);
 
         $this->assertSame($hostileValue, $page['props']['note']);
+    }
+
+    public function testTheFirstVisitPageEqualsThePageSentToAnInertiaRequestForEveryOptionalKey(): void
+    {
+        $build = static fn (): InertiaResponse => new InertiaResponse(
+            'Users/Index',
+            [
+                'users' => ['a', 'b'],
+                'stats' => new DeferProp(static fn (): int => 1, 'sidebar'),
+                'feed'  => (new MergeProp(static fn (): array => [1]))->deepMerge()->matchOn('id'),
+            ],
+            'v1',
+            self::SHELL_VIEW,
+            encryptHistory: true,
+            clearHistory: true,
+        );
+
+        $html = (string) $build()->toResponse($this->makeRequest('users?q=1'), $this->makeResponse())->getBody();
+        $json = (string) $build()->toResponse($this->makeRequest('users?q=1', ['X-Inertia' => 'true']), $this->makeResponse())->getBody();
+
+        $sent = json_decode($json, true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame($sent, $this->decodePageScript($html));
+        $this->assertArrayHasKey('deferredProps', $sent);
+        $this->assertArrayHasKey('deepMergeProps', $sent);
+        $this->assertArrayHasKey('matchPropsOn', $sent);
+        $this->assertTrue($sent['encryptHistory']);
+        $this->assertTrue($sent['clearHistory']);
+    }
+
+    public function testTheFirstVisitMountElementCarriesNoDataPageAttribute(): void
+    {
+        $inertia = new InertiaResponse('Users/Index', [], 'v1', self::SHELL_VIEW);
+
+        $html = (string) $inertia->toResponse($this->makeRequest('users'), $this->makeResponse())->getBody();
+
+        $this->assertStringContainsString('</script><div id="app"></div>', $html);
+        $this->assertSame(1, substr_count($html, 'data-page='));
     }
 
     /**
@@ -801,7 +840,7 @@ final class InertiaResponseTest extends CIUnitTestCase
             true,
             flags: JSON_THROW_ON_ERROR,
         );
-        $html = $this->decodeDataPageAttribute(
+        $html = $this->decodePageScript(
             (string) $inertia->toResponse($this->makeRequest('users'), $this->makeResponse())->getBody(),
         );
 
@@ -859,7 +898,7 @@ final class InertiaResponseTest extends CIUnitTestCase
     {
         $inertia = new InertiaResponse('Users/Index', [], 'v1', self::SHELL_VIEW, true, true);
 
-        $page = $this->decodeDataPageAttribute(
+        $page = $this->decodePageScript(
             (string) $inertia->toResponse($this->makeRequest('users'), $this->makeResponse())->getBody(),
         );
 

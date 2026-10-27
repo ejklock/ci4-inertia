@@ -14,12 +14,14 @@
         <directory name="tests" />
         <ignoreFiles>
             <directory name="vendor" />
+            <file name="src/Helpers/inertia_helper.php" />
         </ignoreFiles>
     </projectFiles>
     <stubs>
         <file name="vendor/codeigniter4/framework/system/Common.php" />
         <file name="vendor/codeigniter4/framework/system/Test/bootstrap.php" />
         <file name="vendor/codeigniter4/framework/system/Helpers/url_helper.php" />
+        <file name="src/Helpers/inertia_helper.php" />
     </stubs>
     <extraFiles>
         <directory name="vendor/codeigniter4/framework/app/Config" />
