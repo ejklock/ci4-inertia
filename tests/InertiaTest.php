@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Ejklock\Ci4Inertia\Tests;
 
+use ArrayObject;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\SiteURI;
 use CodeIgniter\HTTP\UserAgent;
@@ -11,7 +12,9 @@ use CodeIgniter\I18n\Time;
 use CodeIgniter\Test\CIUnitTestCase;
 use Config\App as AppConfig;
 use Config\Services;
+use Ejklock\Ci4Inertia\ExceptionResponse;
 use Ejklock\Ci4Inertia\Inertia;
+use Ejklock\Ci4Inertia\InertiaExceptionHandler;
 use Ejklock\Ci4Inertia\InertiaResponse;
 use Ejklock\Ci4Inertia\ProvidesInertiaProperties;
 use Ejklock\Ci4Inertia\RenderContext;
@@ -21,6 +24,7 @@ use PHPUnit\Framework\AssertionFailedError;
 use ReflectionClass;
 use ReflectionMethod;
 use ReflectionParameter;
+use RuntimeException;
 
 /**
  * Verifies the static `Inertia` class reaches the shared `inertia` service on every call,
@@ -306,6 +310,47 @@ final class InertiaTest extends CIUnitTestCase
         $this->assertSame('second', $this->pageOf(Inertia::render('C'))['version']);
     }
 
+    private function handleAnException(): void
+    {
+        ob_start();
+
+        try {
+            (new InertiaExceptionHandler(config('Exceptions')))->handle(new RuntimeException('x'), $this->makeRequest(), service('response', null, false), 500, 1);
+        } finally {
+            ob_end_clean();
+        }
+    }
+
+    public function testHandleExceptionsUsingRegistersTheCallbackTheExceptionHandlerRuns(): void
+    {
+        /** @var ArrayObject<int, string> $seen */
+        $seen = new ArrayObject();
+
+        try {
+            Inertia::handleExceptionsUsing(static function (ExceptionResponse $r) use ($seen) {
+                $seen->append('first');
+
+                return $r;
+            });
+            Inertia::handleExceptionsUsing(static function (ExceptionResponse $r) use ($seen) {
+                $seen->append('second');
+
+                return $r;
+            });
+
+            $this->handleAnException();
+
+            $this->assertSame(['second'], $seen->getArrayCopy());
+
+            InertiaExceptionHandler::respondUsing(null);
+            $this->handleAnException();
+
+            $this->assertSame(['second'], $seen->getArrayCopy());
+        } finally {
+            InertiaExceptionHandler::respondUsing(null);
+        }
+    }
+
     public function testTheClassCannotBeInstantiated(): void
     {
         $constructor = (new ReflectionClass(Inertia::class))->getConstructor();
@@ -342,7 +387,7 @@ final class InertiaTest extends CIUnitTestCase
         $actual = $this->methodsByName(
             array_filter(
                 (new ReflectionClass($static))->getMethods(),
-                static fn (ReflectionMethod $method): bool => $method->isPublic() && $method->isStatic(),
+                static fn (ReflectionMethod $method): bool => $method->isPublic() && $method->isStatic() && $method->getName() !== 'handleExceptionsUsing',
             ),
         );
 

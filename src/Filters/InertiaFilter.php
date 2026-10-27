@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Ejklock\Ci4Inertia\Filters;
 
+use Closure;
 use CodeIgniter\Filters\FilterInterface;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\Method;
@@ -54,15 +55,8 @@ class InertiaFilter implements FilterInterface
 
         $inertia = service('inertia');
 
-        $memo           = null;
-        $resolveVersion = function () use ($request, &$memo): string {
-            return $memo ??= $this->version($request);
-        };
-        $inertia->version($resolveVersion);
-
-        foreach ($this->share($request) as $key => $prop) {
-            $inertia->share($key, $prop);
-        }
+        $resolveVersion = $this->installVersionResolver($request, $inertia);
+        $this->shareProps($request, $inertia);
 
         if (! $this->isVersionCheckEligible($request)) {
             return null;
@@ -75,6 +69,50 @@ class InertiaFilter implements FilterInterface
         }
 
         return $this->staleVersionResponse($request, $inertia, $currentVersion);
+    }
+
+    /**
+     * Installs this filter's version on `$inertia` for a page the exception handler renders,
+     * where no `before` filter has run, and shares every entry of `share()` when
+     * `$withSharedData` is set. It is the same setup `before()` performs, minus the stale-version
+     * check, so a page rendered for an uncaught exception carries what a normal render does.
+     *
+     * @internal Called by `ExceptionResponse`; an application does not call it.
+     */
+    public function prepareExceptionRender(IncomingRequest $request, ResponseFactory $inertia, bool $withSharedData): void
+    {
+        $this->installVersionResolver($request, $inertia);
+
+        if ($withSharedData) {
+            $this->shareProps($request, $inertia);
+        }
+    }
+
+    /**
+     * Installs `version()` on `$inertia` as its lazy version resolver, memoized so it runs at
+     * most once however often the version is read, and returns that resolver.
+     *
+     * @return Closure(): string
+     */
+    private function installVersionResolver(IncomingRequest $request, ResponseFactory $inertia): Closure
+    {
+        $memo           = null;
+        $resolveVersion = function () use ($request, &$memo): string {
+            return $memo ??= $this->version($request);
+        };
+        $inertia->version($resolveVersion);
+
+        return $resolveVersion;
+    }
+
+    /**
+     * Shares every entry of `share()` on `$inertia` as a prop.
+     */
+    private function shareProps(IncomingRequest $request, ResponseFactory $inertia): void
+    {
+        foreach ($this->share($request) as $key => $prop) {
+            $inertia->share($key, $prop);
+        }
     }
 
     /**
@@ -129,7 +167,7 @@ class InertiaFilter implements FilterInterface
         }
 
         if (! $request->hasHeader(Header::INERTIA)) {
-            return $this->applyVaryHeader($response);
+            return self::applyVaryHeader($response);
         }
 
         if ($this->shouldStoreCurrentUrl($request, $response)) {
@@ -148,7 +186,7 @@ class InertiaFilter implements FilterInterface
             $response = $this->onRedirectWithFragment($request, $response);
         }
 
-        return $this->applyVaryHeader($response);
+        return self::applyVaryHeader($response);
     }
 
     /**
@@ -326,7 +364,7 @@ class InertiaFilter implements FilterInterface
         $response = $inertia->location($this->currentPath($request))
             ->setHeader(Header::VERSION, $currentVersion);
 
-        return $this->applyVaryHeader($response);
+        return self::applyVaryHeader($response);
     }
 
     /**
@@ -393,8 +431,10 @@ class InertiaFilter implements FilterInterface
     /**
      * Appends `Vary: X-Inertia` to `$response` unless it already names it, and returns it,
      * so callers can use the result inline.
+     *
+     * @internal Shared with `ExceptionResponse`, whose page no `after` filter reaches.
      */
-    private function applyVaryHeader(ResponseInterface $response): ResponseInterface
+    public static function applyVaryHeader(ResponseInterface $response): ResponseInterface
     {
         if (! str_contains($response->getHeaderLine('Vary'), Header::INERTIA)) {
             $response->appendHeader('Vary', Header::INERTIA);

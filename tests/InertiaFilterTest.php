@@ -13,6 +13,7 @@ use CodeIgniter\Test\FeatureTestTrait;
 use CodeIgniter\Test\TestResponse;
 use Ejklock\Ci4Inertia\AlwaysProp;
 use Ejklock\Ci4Inertia\Filters\InertiaFilter;
+use Ejklock\Ci4Inertia\ResponseFactory;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\Attributes\DataProvider;
 use stdClass;
@@ -1432,5 +1433,73 @@ final class InertiaFilterTest extends CIUnitTestCase
 
         $this->assertSame(['email'], array_keys($page['props']['errors']));
         $this->assertNotSame('', $page['props']['errors']['email']);
+    }
+
+    /**
+     * A filter whose `version()` counts its calls and whose `share()` adds a `flavor` prop.
+     */
+    private function countingFilter(): object
+    {
+        return new class () extends InertiaFilter {
+            public int $versionCalls = 0;
+
+            protected function version(IncomingRequest $request): string
+            {
+                $this->versionCalls++;
+
+                return 'filter-version';
+            }
+
+            protected function share(IncomingRequest $request): array
+            {
+                return parent::share($request) + ['flavor' => 'vanilla'];
+            }
+        };
+    }
+
+    public function testPreparingAnExceptionRenderInstallsTheFiltersVersionAndSharesNothingByDefault(): void
+    {
+        $filter  = $this->countingFilter();
+        $inertia = new ResponseFactory($this->inertiaGetRequest(), 'app', static fn (): string => 'config-version');
+
+        $filter->prepareExceptionRender($this->inertiaGetRequest(), $inertia, false);
+
+        $this->assertSame('filter-version', $inertia->getVersion());
+        $this->assertSame([], $inertia->getShared());
+    }
+
+    public function testPreparingAnExceptionRenderCanShareEveryEntryOfShare(): void
+    {
+        $filter  = $this->countingFilter();
+        $inertia = new ResponseFactory($this->inertiaGetRequest(), 'app', static fn (): string => 'config-version');
+
+        $filter->prepareExceptionRender($this->inertiaGetRequest(), $inertia, true);
+
+        $this->assertSame('filter-version', $inertia->getVersion());
+        $this->assertSame(['errors', 'flavor'], array_keys($inertia->getShared()));
+        $this->assertSame('vanilla', $inertia->getShared('flavor'));
+    }
+
+    public function testTheVersionInstalledForAnExceptionRenderIsResolvedAtMostOnce(): void
+    {
+        $filter  = $this->countingFilter();
+        $inertia = new ResponseFactory($this->inertiaGetRequest(), 'app', static fn (): string => 'config-version');
+
+        $filter->prepareExceptionRender($this->inertiaGetRequest(), $inertia, false);
+
+        $this->assertSame(0, $filter->versionCalls);
+
+        $inertia->getVersion();
+        $inertia->getVersion();
+
+        $this->assertSame(1, $filter->versionCalls);
+    }
+
+    public function testTheVaryRuleIsSharedWithAnyCaller(): void
+    {
+        $response = InertiaFilter::applyVaryHeader($this->renderedPageResponse());
+        InertiaFilter::applyVaryHeader($response);
+
+        $this->assertSame('X-Inertia', $response->getHeaderLine('Vary'));
     }
 }

@@ -14,9 +14,10 @@ use InvalidArgumentException;
 use UnitEnum;
 
 /**
- * A static shortcut for `service('inertia')`: every method forwards to the shared
+ * A static shortcut for `service('inertia')`: every method but one forwards to the shared
  * `ResponseFactory` on each call, so a replaced or reset service is always the one reached.
- * It holds no state and cannot be instantiated.
+ * The exception, `handleExceptionsUsing()`, registers the callback on `InertiaExceptionHandler`,
+ * which is what holds it. The class holds no state of its own and cannot be instantiated.
  */
 final class Inertia
 {
@@ -272,6 +273,23 @@ final class Inertia
     public static function location(RedirectResponse|string $url): ResponseInterface
     {
         return self::factory()->location($url);
+    }
+
+    /**
+     * Registers the callback that answers an uncaught exception, replacing any earlier one. It
+     * runs only when `Config\Exceptions::handler()` returns an `InertiaExceptionHandler`.
+     *
+     * @param callable(ExceptionResponse): (ExceptionResponse|ResponseInterface|null) $callback Returns
+     *                                                                                          the response to
+     *                                                                                          send, or null to
+     *                                                                                          leave the answer to
+     *                                                                                          CodeIgniter.
+     *
+     * @see InertiaExceptionHandler::respondUsing()
+     */
+    public static function handleExceptionsUsing(callable $callback): void
+    {
+        InertiaExceptionHandler::respondUsing($callback);
     }
 
     private static function factory(): ResponseFactory
