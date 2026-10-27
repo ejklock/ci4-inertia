@@ -30,6 +30,7 @@ use Ejklock\Ci4Inertia\Ssr\Response;
 use Ejklock\Ci4Inertia\Ssr\SsrErrorType;
 use Ejklock\Ci4Inertia\Ssr\SsrException;
 use Ejklock\Ci4Inertia\Ssr\SsrRenderFailed;
+use ErrorException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use ReflectionMethod;
 use ReflectionProperty;
@@ -612,6 +613,129 @@ final class HttpGatewayTest extends CIUnitTestCase
         $this->assertSame('http://hot.override.test/__inertia_ssr', $this->client->curl_options[CURLOPT_URL]);
     }
 
+    #[DataProvider('provideAHotUrlThatIsNotHttpWithAHostIsRefused')]
+    public function testAHotUrlThatIsNotHttpWithAHostIsRefused(string $contents): void
+    {
+        file_put_contents($this->dir . '/hot', $contents);
+
+        $this->assertNotInstanceOf(Response::class, $this->gateway()->dispatch($this->page()));
+
+        $this->assertSame(0, $this->sent);
+        $this->assertCount(1, $this->failures);
+        $this->assertSame(SsrErrorType::Connection, $this->failures[0]->type);
+        $this->assertSame('The SSR hot URL must be an http or https URL with a host.', $this->failures[0]->error);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function provideAHotUrlThatIsNotHttpWithAHostIsRefused(): iterable
+    {
+        yield 'a file url' => ['file:///etc/passwd'];
+
+        yield 'a gopher url' => ['gopher://127.0.0.1:70'];
+
+        yield 'a javascript url' => ['javascript:alert(1)'];
+
+        yield 'a scheme relative url' => ['//evil.example'];
+
+        yield 'a scheme without a host' => ['http://'];
+
+        yield 'an empty file' => [''];
+
+        yield 'a url with a space before the scheme' => ['x http://localhost:5173'];
+
+        yield 'a null byte in the host' => ["http://local\0host:5173"];
+
+        yield 'a line break in the host' => ["http://localhost\r\n:5173"];
+
+        yield 'a space in the host' => ['http://local host:5173'];
+
+        yield 'a delete character at the end' => ["http://localhost:5173\x7f"];
+    }
+
+    public function testSurroundingNewlinesOfAHotUrlAreTrimmedAndAccepted(): void
+    {
+        file_put_contents($this->dir . '/hot', "\r\nhttp://localhost:5173\r\n");
+        $this->answer('200 OK', '{"body":"b"}');
+
+        $this->assertResponse('', 'b', $this->gateway()->dispatch($this->page()));
+        $this->assertSame('http://localhost:5173/__inertia_ssr', $this->client->curl_options[CURLOPT_URL]);
+    }
+
+    public function testTheProductionUrlIsNotValidatedLikeAHotUrl(): void
+    {
+        $this->config->ssrUrl = 'ftp://prod.test:9000';
+        $this->answer('200 OK', '{"body":"b"}');
+
+        $this->assertResponse('', 'b', $this->gateway()->dispatch($this->page()));
+        $this->assertSame(1, $this->sent);
+        $this->assertSame([], $this->failures);
+    }
+
+    public function testAHotUrlSchemeIsMatchedWithoutRegardToCase(): void
+    {
+        file_put_contents($this->dir . '/hot', 'HTTP://localhost:5173');
+        $this->answer('200 OK', '{"body":"b"}');
+
+        $this->assertResponse('', 'b', $this->gateway()->dispatch($this->page()));
+        $this->assertSame('HTTP://localhost:5173/__inertia_ssr', $this->client->curl_options[CURLOPT_URL]);
+    }
+
+    public function testAHttpsHotUrlWithATrailingNewlineIsUsed(): void
+    {
+        file_put_contents($this->dir . '/hot', "https://localhost:5173\n");
+        $this->answer('200 OK', '{"body":"b"}');
+
+        $this->assertResponse('', 'b', $this->gateway()->dispatch($this->page()));
+        $this->assertSame('https://localhost:5173/__inertia_ssr', $this->client->curl_options[CURLOPT_URL]);
+    }
+
+    public function testAConfiguredHotUrlThatIsNotHttpIsRefused(): void
+    {
+        file_put_contents($this->dir . '/hot', 'http://localhost:5173');
+        $this->config->ssrHotUrl = 'ftp://x';
+
+        $this->assertNotInstanceOf(Response::class, $this->gateway()->dispatch($this->page()));
+
+        $this->assertSame(0, $this->sent);
+        $this->assertCount(1, $this->failures);
+        $this->assertSame(SsrErrorType::Connection, $this->failures[0]->type);
+    }
+
+    public function testARefusedHotUrlThrowsWhenTheConfigAsksForIt(): void
+    {
+        file_put_contents($this->dir . '/hot', 'file:///etc/passwd');
+        $this->config->ssrThrowOnError = true;
+        $gateway                       = $this->gateway();
+
+        try {
+            $gateway->dispatch($this->page());
+            $this->fail('A refused hot URL must throw.');
+        } catch (SsrException $e) {
+            $this->assertStringContainsString('The SSR hot URL must be an http or https URL with a host.', $e->getMessage());
+            $this->assertStringNotContainsString('passwd', $e->getMessage());
+        }
+
+        $this->assertSame(0, $this->sent);
+    }
+
+    public function testAHotUrlFromASubclassThatIsNotHttpIsRefused(): void
+    {
+        file_put_contents($this->dir . '/hot', 'http://localhost:5173');
+        $gateway = new class ($this->config, fn (array $options): CURLRequest => $this->makeClient($options), $this->detector()) extends HttpGateway {
+            protected function getHotUrl(string $path = '/'): string
+            {
+                return 'file:///x';
+            }
+        };
+
+        $this->assertNotInstanceOf(Response::class, $gateway->dispatch($this->page()));
+
+        $this->assertSame(0, $this->sent);
+        $this->assertCount(1, $this->failures);
+    }
+
     public function testASubclassSeesAFailureThroughTheFailureHook(): void
     {
         $this->answer('500 Internal Server Error', '{"error":"bad"}');
@@ -790,6 +914,14 @@ final class HttpGatewayTest extends CIUnitTestCase
 
     private function requestFor(string $route, string $baseUrl = 'http://example.com/', ?string $requestUri = null, string $indexPage = ''): IncomingRequest
     {
+        if (str_contains($route, '?')) {
+            $this->skipWhenMaxInputVarsBelow(1 + (int) preg_match_all('/[&;]/', $route));
+
+            if (str_contains($route, '&')) {
+                $this->skipUnlessAmpersandSeparatesPairs();
+            }
+        }
+
         $config            = new AppConfig();
         $config->baseURL   = $baseUrl;
         $config->indexPage = $indexPage;
@@ -948,6 +1080,152 @@ final class HttpGatewayTest extends CIUnitTestCase
         yield 'a percent encoded path matches the decoded pattern' => ['café', 'caf%C3%A9', true];
 
         yield 'a list of patterns' => [['a', 'b'], 'b', true];
+    }
+
+    /**
+     * @param string $separators the characters that join the pairs, used in turn
+     */
+    private function queryOfPairs(int $count, string $separators = '&'): string
+    {
+        $query = '';
+
+        for ($i = 0; $i < $count; $i++) {
+            $query .= ($i === 0 ? '' : $separators[($i - 1) % strlen($separators)]) . 'k' . $i . '=1';
+        }
+
+        return $query;
+    }
+
+    private function skipUnlessAmpersandSeparatesPairs(): void
+    {
+        if (! str_contains((string) ini_get('arg_separator.input'), '&')) {
+            $this->markTestSkipped('The case needs the arg_separator.input setting to include "&".');
+        }
+    }
+
+    private function skipWhenMaxInputVarsBelow(int $minimum): void
+    {
+        if ((int) ini_get('max_input_vars') < $minimum) {
+            $this->markTestSkipped('The case needs the max_input_vars setting to be at least ' . $minimum . '.');
+        }
+    }
+
+    /**
+     * Runs the callback under an error handler that turns warnings into exceptions, as the
+     * framework's does.
+     */
+    private function withWarningsAsExceptions(Closure $callback): void
+    {
+        set_error_handler(static function (int $severity, string $message, string $file, int $line): bool {
+            throw new ErrorException($message, 0, $severity, $file, $line);
+        });
+
+        try {
+            $callback();
+        } finally {
+            restore_error_handler();
+        }
+    }
+
+    #[DataProvider('provideAQueryWithMoreThanMaxInputVarsPairsSkipsSsr')]
+    public function testAQueryWithMoreThanMaxInputVarsPairsSkipsSsr(string $pattern, int $extra, bool $expectSent, string $separators): void
+    {
+        $limit   = (int) ini_get('max_input_vars');
+        $gateway = $this->httpGateway();
+
+        if ($extra === 0) {
+            $this->skipWhenMaxInputVarsBelow(1);
+        }
+
+        if ($pattern !== '') {
+            $gateway->except($pattern);
+        }
+
+        $this->withWarningsAsExceptions(function () use ($gateway, $limit, $extra, $separators): void {
+            $this->dispatchFor($gateway, 'users', 'http://example.com/', '/users?' . $this->queryOfPairs($limit + $extra, $separators));
+        });
+
+        $this->assertSame($expectSent ? 1 : 0, $this->sent);
+    }
+
+    /**
+     * @return iterable<string, array{string, int, bool, string}>
+     */
+    public static function provideAQueryWithMoreThanMaxInputVarsPairsSkipsSsr(): iterable
+    {
+        $inputSeparators = (string) ini_get('arg_separator.input');
+        $joins           = array_map(static fn (string $character): string => 'the ' . bin2hex($character) . ' separator', str_split($inputSeparators));
+        $joins           = array_combine($joins, str_split($inputSeparators));
+
+        if (strlen($inputSeparators) > 1) {
+            $joins['every separator in turn'] = $inputSeparators;
+        }
+
+        foreach ($joins as $name => $separators) {
+            yield 'a limit of pairs with a pattern that does not match using ' . $name => ['admin/*', 0, true, $separators];
+
+            yield 'one pair over the limit with a pattern that does not match using ' . $name => ['admin/*', 1, false, $separators];
+
+            yield 'one pair over the limit without a pattern using ' . $name => ['', 1, true, $separators];
+
+            yield 'one pair over the limit with a pattern that matches the path using ' . $name => ['users', 1, false, $separators];
+        }
+    }
+
+    public function testAFullUrlPatternMatchesTheQueryAsTheConfiguredSeparatorsParseIt(): void
+    {
+        $this->skipWhenMaxInputVarsBelow(2);
+        parse_str('x=1&y=2', $parsed);
+        $gateway = $this->httpGateway();
+        $gateway->except('http://example.com/users?' . http_build_query($parsed, '', '&', PHP_QUERY_RFC3986));
+
+        $this->withWarningsAsExceptions(function () use ($gateway): void {
+            $this->dispatchFor($gateway, 'users', 'http://example.com/', '/users?x=1&y=2');
+        });
+
+        $this->assertSame(0, $this->sent);
+    }
+
+    public function testAFullUrlPatternStillMatchesAQueryBelowTheLimit(): void
+    {
+        $this->skipWhenMaxInputVarsBelow(2);
+        $this->skipUnlessAmpersandSeparatesPairs();
+        $gateway = $this->httpGateway();
+        $gateway->except('http://example.com/users?a=1&b=2');
+
+        $this->withWarningsAsExceptions(function () use ($gateway): void {
+            $this->dispatchFor($gateway, 'users', 'http://example.com/', '/users?b=2&a=1');
+        });
+
+        $this->assertSame(0, $this->sent);
+    }
+
+    #[DataProvider('provideAMalformedQueryBelowTheLimitDoesNotFail')]
+    public function testAMalformedQueryBelowTheLimitDoesNotFail(string $query): void
+    {
+        $this->skipWhenMaxInputVarsBelow(5);
+        $gateway = $this->httpGateway();
+        $gateway->except('admin/*');
+
+        $this->withWarningsAsExceptions(function () use ($gateway, $query): void {
+            $this->dispatchFor($gateway, 'users', 'http://example.com/', '/users?' . $query);
+        });
+
+        $this->assertSame(1, $this->sent);
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function provideAMalformedQueryBelowTheLimitDoesNotFail(): iterable
+    {
+        yield 'empty pairs' => ['&&&'];
+
+        yield 'empty pairs around a pair' => ['&&a=1&&'];
+
+        yield 'a pair without a key' => ['=x'];
+
+        yield 'a bad percent escape' => ['%ZZ'];
     }
 
     public function testExcludedPathsAccumulateAcrossCalls(): void

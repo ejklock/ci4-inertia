@@ -64,6 +64,12 @@ class HttpGateway implements ConfiguresSsrRequests, DisablesSsr, ExcludesSsrPath
 
         $url = $isHot ? $this->getHotUrl('/__inertia_ssr') : $this->getProductionUrl('/render');
 
+        if ($isHot && ! $this->isHttpUrlWithHost($url)) {
+            $this->handleSsrFailure($page, ['error' => 'The SSR hot URL must be an http or https URL with a host.', 'type' => 'connection']);
+
+            return null;
+        }
+
         try {
             $response = $this->pendingRequest()->post($url, ['json' => $page]);
 
@@ -197,18 +203,26 @@ class HttpGateway implements ConfiguresSsrRequests, DisablesSsr, ExcludesSsrPath
 
     /**
      * Whether the request's path, or the full URL the client requested with its query, matches an
-     * excluded pattern. A pattern is trimmed of slashes, except `/` itself, which is the root.
+     * excluded pattern. A pattern is trimmed of slashes, except `/` itself, which is the root. The
+     * full URL is built only when a pattern did not match the path, and a query with more pairs than
+     * PHP's `max_input_vars` cannot be parsed as the server would, so such a request counts as excluded.
      */
     protected function inExceptArray(IncomingRequest $request): bool
     {
         $path = rawurldecode(trim($request->getPath(), '/'));
         $path = $path === '' ? '/' : $path;
-        $url  = $this->fullUrl($request);
+        $url  = null;
 
         foreach ($this->except as $pattern) {
             $pattern = $pattern === '/' ? $pattern : trim($pattern, '/');
 
-            if ($this->matches($pattern, $url) || $this->matches($pattern, $path)) {
+            if ($this->matches($pattern, $path)) {
+                return true;
+            }
+
+            $url ??= $this->fullUrl($request);
+
+            if ($url === null || $this->matches($pattern, $url)) {
                 return true;
             }
         }
@@ -220,9 +234,10 @@ class HttpGateway implements ConfiguresSsrRequests, DisablesSsr, ExcludesSsrPath
      * The URL the client requested, normalized like Laravel's `fullUrl()`: no trailing slash on the
      * path, and the query sorted by key. The path and query are the server's raw request URI, so
      * the index page shows only when the client used it; without one, the request URI's path and
-     * query are used.
+     * query are used. Null when the query, split by any `arg_separator.input` character with empty
+     * segments counted, has more segments than `max_input_vars`, where 0 allows none.
      */
-    private function fullUrl(IncomingRequest $request): string
+    private function fullUrl(IncomingRequest $request): ?string
     {
         $uri        = $request->getUri();
         $requestUri = $request->getServer('REQUEST_URI');
@@ -240,7 +255,13 @@ class HttpGateway implements ConfiguresSsrRequests, DisablesSsr, ExcludesSsrPath
         [$path, $query] = explode('?', $relative, 2) + [1 => ''];
         $url            = rtrim($uri->getScheme() . '://' . $uri->getAuthority() . '/' . ltrim($path, '/'), '/');
 
-        $parameters = $this->parseQuery($query);
+        $segments = $query === '' ? [] : $this->querySegments($query);
+
+        if (count($segments) > (int) ini_get('max_input_vars')) {
+            return null;
+        }
+
+        $parameters = $this->parseQuery($segments);
         ksort($parameters);
         $query = http_build_query($parameters, '', '&', PHP_QUERY_RFC3986);
 
@@ -252,16 +273,45 @@ class HttpGateway implements ConfiguresSsrRequests, DisablesSsr, ExcludesSsrPath
     }
 
     /**
-     * Parses a query string like Symfony's `HeaderUtils::parseQuery`, which, unlike `parse_str`,
+     * Splits a query on every character of `arg_separator.input`, as `parse_str` does, keeping empty
+     * segments.
+     *
+     * @return list<string>
+     */
+    private function querySegments(string $query): array
+    {
+        $separators = $this->inputSeparators();
+        $first      = $separators[0];
+
+        return explode($first, strtr($query, $separators, str_repeat($first, strlen($separators))));
+    }
+
+    /**
+     * The characters `parse_str` splits a query on. PHP never leaves the setting empty; the `&`
+     * fallback only gives the type a non-empty string.
+     *
+     * @return non-empty-string
+     */
+    private function inputSeparators(): string
+    {
+        $separators = (string) ini_get('arg_separator.input');
+
+        return $separators === '' ? '&' : $separators;
+    }
+
+    /**
+     * Parses query segments like Symfony's `HeaderUtils::parseQuery`, which, unlike `parse_str`,
      * keeps dots and spaces in the keys: each key is hex encoded around the parse and decoded after.
+     *
+     * @param list<string> $segments the query split on the input separators
      *
      * @return array<int|string, mixed>
      */
-    private function parseQuery(string $query): array
+    private function parseQuery(array $segments): array
     {
         $pairs = [];
 
-        foreach (explode('&', $query) as $pair) {
+        foreach ($segments as $pair) {
             $pair = explode("\0", $pair)[0];
             $at   = strpos($pair, '=');
             $key  = urldecode($at === false ? $pair : substr($pair, 0, $at));
@@ -274,7 +324,7 @@ class HttpGateway implements ConfiguresSsrRequests, DisablesSsr, ExcludesSsrPath
                 : bin2hex(substr($key, 0, $open)) . rawurlencode(substr($key, $open)) . $rest;
         }
 
-        parse_str(implode('&', $pairs), $parsed);
+        parse_str(implode($this->inputSeparators()[0], $pairs), $parsed);
 
         $parameters = [];
 
@@ -321,6 +371,16 @@ class HttpGateway implements ConfiguresSsrRequests, DisablesSsr, ExcludesSsrPath
         }
 
         return rtrim(trim($base), '/') . '/' . ltrim($path, '/');
+    }
+
+    private function isHttpUrlWithHost(string $url): bool
+    {
+        $parts = parse_url($url);
+
+        return preg_match('/[\\x00-\\x20\\x7f]/', $url) === 0
+            && $parts !== false
+            && in_array(strtolower($parts['scheme'] ?? ''), ['http', 'https'], true)
+            && ($parts['host'] ?? '') !== '';
     }
 
     /**
