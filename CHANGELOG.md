@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- `Ejklock\Ci4Inertia\Inertia`, a static shortcut for `service('inertia')` with the same methods as `ResponseFactory`: `Inertia::render('Users/Index', [...])`.
 - `InertiaFilter` shares the validation errors that `redirect()->withInput()` flashes as the `errors` prop, so a controller no longer needs `->with('errors', ...)`; an `errors` session array still wins whole.
 - `InertiaFilter::version(IncomingRequest $request): string`, a protected hook an extending filter overrides to compute the asset version at runtime; it defaults to the config's `version`.
 
