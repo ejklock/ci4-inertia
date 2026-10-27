@@ -11,13 +11,16 @@ use CodeIgniter\HTTP\RequestInterface;
 use CodeIgniter\HTTP\ResponseInterface;
 use Ejklock\Ci4Inertia\AlwaysProp;
 use Ejklock\Ci4Inertia\ResponseFactory;
+use Ejklock\Ci4Inertia\Support\Header;
 
 /**
  * Enforces the wire-level Inertia protocol rules at the filter layer: shares the CI4
  * session validation errors as the `errors` prop before every render, answers a stale
- * asset version with a `409` reload ahead of the controller, marks every response
- * `Vary: X-Inertia`, and converts a `302` to `303` after a `PUT`/`PATCH`/`DELETE`
- * redirect. An application extends this class and overrides `share()` to add its own
+ * asset version with a `409` reload ahead of the controller, and marks every response
+ * `Vary: X-Inertia`. After the controller, an Inertia request also has its `PUT`/`PATCH`/`DELETE`
+ * `302` converted to `303`, an empty `200` redirected back, a redirect to a URL with a
+ * `#fragment` turned into a `409` with `X-Inertia-Redirect`, and an Inertia `GET` recorded as
+ * the previous URL (config `storePreviousUrl`). An application extends this class and overrides `share()` to add its own
  * shared props, and `version()` to compute the asset version at runtime; the stale-version
  * check and every page object use that one value, resolved at most once per request and
  * only when the check or a render needs it, so a later `service('inertia')->version()`
@@ -29,6 +32,8 @@ use Ejklock\Ci4Inertia\ResponseFactory;
  */
 class InertiaFilter implements FilterInterface
 {
+    private const PREVIOUS_URL_SESSION_KEY = '_ci_previous_url';
+
     /**
      * Installs `version()` as the lazy asset version resolver, shares every entry of
      * `share()` as a prop, then answers a stale-version `GET` with the `409` reload
@@ -58,7 +63,7 @@ class InertiaFilter implements FilterInterface
 
         $currentVersion = $resolveVersion();
 
-        if ($request->getHeaderLine('X-Inertia-Version') === $currentVersion) {
+        if ($request->getHeaderLine(Header::VERSION) === $currentVersion) {
             return null;
         }
 
@@ -94,21 +99,140 @@ class InertiaFilter implements FilterInterface
     }
 
     /**
-     * Marks every response `Vary: X-Inertia`, then converts a `302` to a `303` when the
-     * request method was `PUT`, `PATCH`, or `DELETE` — a `POST`-triggered `302` is left
-     * untouched.
+     * Marks every response `Vary: X-Inertia`; on an Inertia request it then applies the
+     * protocol rules in inertia-laravel's order: records an Inertia `GET` as the previous
+     * URL, answers an empty `200` through `onEmptyResponse()`, converts a `302` to a `303`
+     * when the method was `PUT`, `PATCH`, or `DELETE`, and answers a redirect whose
+     * `Location` holds a `#fragment` through `onRedirectWithFragment()` unless the request
+     * is a prefetch. A request without `X-Inertia` is returned as it is.
      *
      * @param list<string>|null $arguments Unused; this filter takes no route arguments.
      */
     public function after(RequestInterface $request, ResponseInterface $response, $arguments = null): ResponseInterface
     {
-        $this->applyVaryHeader($response);
+        assert($request instanceof IncomingRequest);
+
+        if (! $request->hasHeader(Header::INERTIA)) {
+            return $this->applyVaryHeader($response);
+        }
+
+        $wasRedirect = $this->isRedirectStatus($response);
+
+        if ($this->shouldStoreCurrentUrl($request, $response)) {
+            session()->set(self::PREVIOUS_URL_SESSION_KEY, (string) $request->getUri());
+        }
+
+        if ($this->isEmptyOk($response)) {
+            $response = $this->onEmptyResponse($request, $response);
+        }
 
         if ($this->isDestructiveMethodRedirect($request, $response)) {
             $response->setStatusCode(303);
         }
 
-        return $response;
+        if ($wasRedirect && str_contains($response->getHeaderLine('Location'), '#') && ! $this->isPrefetch($request)) {
+            $response = $this->onRedirectWithFragment($request, $response);
+        }
+
+        return $this->applyVaryHeader($response);
+    }
+
+    /**
+     * Reports whether an Inertia visit is to be recorded as CodeIgniter's previous URL, so
+     * `redirect()->back()` returns to it: only a `GET` that `$response` answers with a
+     * rendered page (a `200` carrying `X-Inertia`), with `storePreviousUrl` on, a session
+     * the request already carries (its cookie, or one already started), and neither a prefetch,
+     * a Precognition request, nor a partial reload of the component the response renders. A
+     * redirect, an empty `200` or a `409` is never recorded: CodeIgniter reads the stored URL
+     * ahead of the `Referer`, so recording one would send `back()` to the page itself.
+     */
+    public function shouldStoreCurrentUrl(IncomingRequest $request, ResponseInterface $response): bool
+    {
+        return config('Inertia')->storePreviousUrl
+            && $request->getMethod() === Method::GET
+            && $response->getStatusCode() === 200
+            && $response->getHeaderLine(Header::INERTIA) === 'true'
+            && ($request->getCookie(config('Session')->cookieName) !== null || isset($_SESSION))
+            && ! $this->isPrefetch($request)
+            && $request->getHeaderLine(Header::PRECOGNITION) !== 'true'
+            && ! $this->isPartialReloadOfRenderedComponent($request, $response);
+    }
+
+    /**
+     * The response for an Inertia request answered with an empty `200`: a redirect to the
+     * previous URL, as `previous_url()` reads it (the stored one, else the `Referer`, else the
+     * site root). It does not use `redirect()->back()`, which starts a session the request
+     * may not carry. The status is a fixed `302`, so the filter's own rewrite turns it into
+     * `303` for `PUT`, `PATCH` and `DELETE` whatever protocol CodeIgniter would pick. An
+     * extending class overrides it to answer differently.
+     */
+    protected function onEmptyResponse(IncomingRequest $request, ResponseInterface $response): ResponseInterface
+    {
+        return redirect()->to(previous_url(), 302);
+    }
+
+    /**
+     * The response for an Inertia redirect to a URL with a `#fragment`, which the browser
+     * would drop on a followed redirect: an empty `409` whose `X-Inertia-Redirect` header
+     * carries the `Location`, so the client navigates there itself. It reuses `$response`,
+     * so the cookies already set on it (session, CSRF) are kept, and drops its `Location`
+     * header, which the client must not follow. An extending class overrides it to answer
+     * differently.
+     */
+    protected function onRedirectWithFragment(IncomingRequest $request, ResponseInterface $response): ResponseInterface
+    {
+        $location = $response->getHeaderLine('Location');
+
+        return $response
+            ->removeHeader('Location')
+            ->setStatusCode(409)
+            ->setBody('')
+            ->setHeader(Header::REDIRECT, $location);
+    }
+
+    /**
+     * Reports whether `$response` is a `200` with an empty body; a `204` or a body of `0`
+     * is not.
+     */
+    private function isEmptyOk(ResponseInterface $response): bool
+    {
+        return $response->getStatusCode() === 200 && (string) $response->getBody() === '';
+    }
+
+    /**
+     * Reports whether `$response` carries one of the redirect statuses.
+     */
+    private function isRedirectStatus(ResponseInterface $response): bool
+    {
+        return in_array($response->getStatusCode(), [201, 301, 302, 303, 307, 308], true);
+    }
+
+    /**
+     * Reports whether the browser marked the request a prefetch, through `X-Moz`, `Purpose`
+     * or `Sec-Purpose`.
+     */
+    private function isPrefetch(IncomingRequest $request): bool
+    {
+        return strcasecmp($request->getHeaderLine('X-Moz'), 'prefetch') === 0
+            || strcasecmp($request->getHeaderLine('Purpose'), 'prefetch') === 0
+            || strcasecmp($request->getHeaderLine('Sec-Purpose'), 'prefetch') === 0;
+    }
+
+    /**
+     * Reports whether the request is a partial reload of the component `$response` renders:
+     * deferred props, polling and infinite scroll are not navigations the visitor came from.
+     */
+    private function isPartialReloadOfRenderedComponent(IncomingRequest $request, ResponseInterface $response): bool
+    {
+        $component = $request->getHeaderLine(Header::PARTIAL_COMPONENT);
+
+        if ($component === '') {
+            return false;
+        }
+
+        $page = json_decode((string) $response->getBody(), true);
+
+        return is_array($page) && ($page['component'] ?? null) === $component;
     }
 
     /**
@@ -137,7 +261,7 @@ class InertiaFilter implements FilterInterface
      */
     private function isVersionCheckEligible(IncomingRequest $request): bool
     {
-        return $request->hasHeader('X-Inertia') && $request->getMethod() === Method::GET;
+        return $request->hasHeader(Header::INERTIA) && $request->getMethod() === Method::GET;
     }
 
     /**
@@ -152,7 +276,7 @@ class InertiaFilter implements FilterInterface
         $this->reflashSessionData();
 
         $response = $inertia->location($this->currentPath($request))
-            ->setHeader('X-Inertia-Version', $currentVersion);
+            ->setHeader(Header::VERSION, $currentVersion);
 
         return $this->applyVaryHeader($response);
     }
@@ -195,12 +319,14 @@ class InertiaFilter implements FilterInterface
     }
 
     /**
-     * Appends `Vary: X-Inertia` to `$response` and returns it, so callers can use the
-     * result inline.
+     * Appends `Vary: X-Inertia` to `$response` unless it already names it, and returns it,
+     * so callers can use the result inline.
      */
     private function applyVaryHeader(ResponseInterface $response): ResponseInterface
     {
-        $response->appendHeader('Vary', 'X-Inertia');
+        if (! str_contains($response->getHeaderLine('Vary'), Header::INERTIA)) {
+            $response->appendHeader('Vary', Header::INERTIA);
+        }
 
         return $response;
     }

@@ -7,11 +7,13 @@ namespace Ejklock\Ci4Inertia\Tests;
 use Closure;
 use CodeIgniter\Config\BaseService;
 use CodeIgniter\HTTP\IncomingRequest;
+use CodeIgniter\HTTP\ResponseInterface;
 use CodeIgniter\Test\CIUnitTestCase;
 use CodeIgniter\Test\FeatureTestTrait;
 use CodeIgniter\Test\TestResponse;
 use Ejklock\Ci4Inertia\AlwaysProp;
 use Ejklock\Ci4Inertia\Filters\InertiaFilter;
+use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\Attributes\DataProvider;
 use stdClass;
 
@@ -32,6 +34,17 @@ final class InertiaFilterTest extends CIUnitTestCase
     public static int $hookCalls = 0;
     private Closure $originalVersion;
     private string $originalRootView;
+    private bool $sessionGlobalExisted = false;
+
+    /**
+     * @var array<string, mixed>
+     */
+    private array $sessionGlobalBefore = [];
+
+    /**
+     * @var array<string, mixed>
+     */
+    private array $serverBefore = [];
 
     /**
      * @var array<string, string>
@@ -52,18 +65,35 @@ final class InertiaFilterTest extends CIUnitTestCase
         $this->originalAliases       = $filters->aliases;
         $filters->aliases['inertia'] = InertiaFilter::class;
 
+        $this->sessionGlobalExisted = isset($_SESSION);
+        $this->sessionGlobalBefore  = $_SESSION ?? [];
+        $this->serverBefore         = service('superglobals')->getServerArray();
+
         $this->resetPerRequestServices();
     }
 
     protected function tearDown(): void
     {
-        $inertia           = config('Inertia');
-        $inertia->version  = $this->originalVersion;
-        $inertia->rootView = $this->originalRootView;
+        $inertia                   = config('Inertia');
+        $inertia->version          = $this->originalVersion;
+        $inertia->rootView         = $this->originalRootView;
+        $inertia->storePreviousUrl = true;
+        $superglobals              = service('superglobals');
+        $superglobals->setCookieArray([]);
+        $superglobals->setServerArray($this->serverBefore);
+        BaseService::resetSingle('superglobals');
+        BaseService::resetSingle('request');
+
+        if ($this->sessionGlobalExisted) {
+            $_SESSION = $this->sessionGlobalBefore;
+        } else {
+            unset($_SESSION);
+        }
 
         config('Filters')->aliases = $this->originalAliases;
 
         $this->resetPerRequestServices();
+        BaseService::resetSingle('session');
 
         parent::tearDown();
     }
@@ -75,6 +105,7 @@ final class InertiaFilterTest extends CIUnitTestCase
     private function resetPerRequestServices(): void
     {
         BaseService::resetSingle('response');
+        BaseService::resetSingle('redirectresponse');
         BaseService::resetSingle('inertia');
         BaseService::resetSingle('routes');
         BaseService::resetSingle('router');
@@ -190,13 +221,13 @@ final class InertiaFilterTest extends CIUnitTestCase
     }
 
     #[DataProvider('provideDestructiveMethodRedirectIsConvertedFrom302To303')]
-    public function testDestructiveMethodRedirectIsConvertedFrom302To303(string $method): void
+    public function testInertiaDestructiveMethodRedirectIsConvertedFrom302To303(string $method): void
     {
         $this->withRoutes([
             [$method, 'page/1', static fn () => redirect()->to('/page/1', 302), ['filter' => 'inertia']],
         ]);
 
-        $result = $this->call($method, 'page/1');
+        $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest'])->call($method, 'page/1');
 
         $result->assertStatus(303);
     }
@@ -213,15 +244,631 @@ final class InertiaFilterTest extends CIUnitTestCase
         yield 'DELETE' => ['DELETE'];
     }
 
-    public function testPostRedirectStaysAt302(): void
+    #[DataProvider('provideDestructiveMethodRedirectIsConvertedFrom302To303')]
+    public function testNonInertiaDestructiveMethodRedirectStaysAt302(string $method): void
+    {
+        $this->withRoutes([
+            [$method, 'page/1', static fn () => redirect()->to('/page/1', 302), ['filter' => 'inertia']],
+        ]);
+
+        $this->call($method, 'page/1')->assertStatus(302);
+    }
+
+    public function testInertiaPostRedirectStaysAt302(): void
     {
         $this->withRoutes([
             ['POST', 'page/1', static fn () => redirect()->to('/page/1', 302), ['filter' => 'inertia']],
         ]);
 
-        $result = $this->post('page/1');
+        $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest'])->post('page/1')->assertStatus(302);
+    }
+
+    #[DataProvider('provideInertiaPutRedirectOtherThan302IsUnchanged')]
+    public function testInertiaPutRedirectOtherThan302IsUnchanged(int $status): void
+    {
+        $this->withRoutes([
+            ['PUT', 'page/1', static fn () => redirect()->to('/page/1', $status), ['filter' => 'inertia']],
+        ]);
+
+        $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest'])->call('PUT', 'page/1')->assertStatus($status);
+    }
+
+    /**
+     * @return iterable<string, array{0: int}>
+     */
+    public static function provideInertiaPutRedirectOtherThan302IsUnchanged(): iterable
+    {
+        yield '301' => [301];
+
+        yield '307' => [307];
+    }
+
+    public function testInertiaGetReturningAnEmptyBodyRedirectsBackToTheReferer(): void
+    {
+        $this->withRoutes([
+            ['GET', 'page', static fn () => service('response')->setBody(''), ['filter' => 'inertia']],
+        ]);
+
+        config('Inertia')->storePreviousUrl = false;
+        service('superglobals')->setServer('HTTP_REFERER', 'http://localhost/users');
+
+        $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest', 'X-Inertia-Version' => self::CURRENT_VERSION])->get('/page');
+
+        $this->assertStringEndsWith('/users', $result->response()->getHeaderLine('Location'));
+        $this->assertSame('X-Inertia', $result->response()->getHeaderLine('Vary'));
+    }
+
+    public function testInertiaPutReturningAnEmptyBodyRedirectsBackWith303(): void
+    {
+        $this->withRoutes([
+            ['PUT', 'page', static fn () => service('response')->setBody(''), ['filter' => 'inertia']],
+        ]);
+
+        config('Inertia')->storePreviousUrl = false;
+        service('superglobals')->setServer('HTTP_REFERER', 'http://localhost/users');
+
+        $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest'])->call('PUT', 'page');
+
+        $result->assertStatus(303);
+        $this->assertStringEndsWith('/users', $result->response()->getHeaderLine('Location'));
+    }
+
+    public function testNonInertiaRequestReturningAnEmptyBodyStays200(): void
+    {
+        $this->withRoutes([
+            ['GET', 'page', static fn () => service('response')->setBody(''), ['filter' => 'inertia']],
+        ]);
+
+        $this->get('/page')->assertStatus(200);
+    }
+
+    public function testInertiaRequestAnswering204IsUnchanged(): void
+    {
+        $this->withRoutes([
+            ['POST', 'page', static fn () => service('response')->setStatusCode(204), ['filter' => 'inertia']],
+        ]);
+
+        $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest'])->post('/page')->assertStatus(204);
+    }
+
+    public function testInertiaRequestReturningTheBodyZeroIsUnchanged(): void
+    {
+        $this->withRoutes([
+            ['POST', 'page', static fn () => service('response')->setBody('0'), ['filter' => 'inertia']],
+        ]);
+
+        $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest'])->post('/page');
+
+        $result->assertStatus(200);
+        $this->assertSame('0', (string) $result->response()->getBody());
+    }
+
+    public function testAnExtendingFilterOverridesTheEmptyResponseHandling(): void
+    {
+        $extending = new class () extends InertiaFilter {
+            protected function onEmptyResponse(IncomingRequest $request, ResponseInterface $response): ResponseInterface
+            {
+                return service('response')->setStatusCode(202)->setBody('handled');
+            }
+        };
+
+        config('Filters')->aliases['inertia'] = $extending::class;
+        $this->withRoutes([
+            ['POST', 'page', static fn () => service('response')->setBody(''), ['filter' => 'inertia']],
+        ]);
+
+        $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest'])->post('/page');
+
+        $result->assertStatus(202);
+        $this->assertSame('handled', (string) $result->response()->getBody());
+    }
+
+    public function testInertiaPostRedirectToAFragmentBecomesA409WithTheRedirectHeader(): void
+    {
+        $this->withRoutes([
+            ['POST', 'page', static fn () => redirect()->to('/users#top'), ['filter' => 'inertia']],
+        ]);
+
+        $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest'])->post('/page');
+
+        $result->assertStatus(409);
+        $this->assertStringEndsWith('/users#top', $result->response()->getHeaderLine('X-Inertia-Redirect'));
+        $this->assertSame('', (string) $result->response()->getBody());
+        $this->assertSame('X-Inertia', $result->response()->getHeaderLine('Vary'));
+    }
+
+    #[DataProvider('provideEveryRedirectStatusToAFragmentBecomesA409')]
+    public function testEveryRedirectStatusToAFragmentBecomesA409(int $status): void
+    {
+        $this->withRoutes([
+            ['POST', 'page', static fn () => service('response')->setStatusCode($status)->setHeader('Location', '/users#top')->setBody('x'), ['filter' => 'inertia']],
+        ]);
+
+        $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest'])->post('/page')->assertStatus(409);
+    }
+
+    /**
+     * @return iterable<string, array{0: int}>
+     */
+    public static function provideEveryRedirectStatusToAFragmentBecomesA409(): iterable
+    {
+        foreach ([201, 301, 302, 303, 307, 308] as $status) {
+            yield (string) $status => [$status];
+        }
+    }
+
+    #[DataProvider('provideANonRedirectStatusCarryingAFragmentLocationIsUnchanged')]
+    public function testANonRedirectStatusCarryingAFragmentLocationIsUnchanged(int $status): void
+    {
+        $this->withRoutes([
+            ['POST', 'page', static fn () => service('response')->setStatusCode($status)->setHeader('Location', '/users#top')->setBody('x'), ['filter' => 'inertia']],
+        ]);
+
+        $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest'])->post('/page')->assertStatus($status);
+    }
+
+    /**
+     * @return iterable<string, array{0: int}>
+     */
+    public static function provideANonRedirectStatusCarryingAFragmentLocationIsUnchanged(): iterable
+    {
+        foreach ([200, 202, 300, 304] as $status) {
+            yield (string) $status => [$status];
+        }
+    }
+
+    public function testInertiaGetAnsweredWithNoBodyAtAllRedirectsBack(): void
+    {
+        $this->withRoutes([
+            ['GET', 'page', static fn () => service('response'), ['filter' => 'inertia']],
+        ]);
+
+        config('Inertia')->storePreviousUrl = false;
+        service('superglobals')->setServer('HTTP_REFERER', 'http://localhost/users');
+
+        $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest', 'X-Inertia-Version' => self::CURRENT_VERSION])->get('/page');
+
+        $this->assertStringEndsWith('/users', $result->response()->getHeaderLine('Location'));
+    }
+
+    public function testShouldStoreCurrentUrlIsCallableByAnApplication(): void
+    {
+        $request = $this->inertiaGetRequest();
+        $request->setGlobal('cookie', [(string) config('Session')->cookieName => 'abc']);
+
+        $this->assertTrue((new InertiaFilter())->shouldStoreCurrentUrl($request, $this->renderedPageResponse()));
+    }
+
+    public function testInertiaPutRedirectToAFragmentBecomes409AfterThe303Rewrite(): void
+    {
+        $this->withRoutes([
+            ['PUT', 'page', static fn () => redirect()->to('/a#b', 302), ['filter' => 'inertia']],
+        ]);
+
+        $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest'])->call('PUT', 'page')->assertStatus(409);
+    }
+
+    public function testInertiaRedirectWithoutAFragmentIsUnchanged(): void
+    {
+        $this->withRoutes([
+            ['POST', 'page', static fn () => redirect()->to('/users'), ['filter' => 'inertia']],
+        ]);
+
+        $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest'])->post('/page');
 
         $result->assertStatus(302);
+        $this->assertFalse($result->response()->hasHeader('X-Inertia-Redirect'));
+    }
+
+    public function testNonInertiaRedirectToAFragmentIsUnchanged(): void
+    {
+        $this->withRoutes([
+            ['POST', 'page', static fn () => redirect()->to('/users#top'), ['filter' => 'inertia']],
+        ]);
+
+        $result = $this->post('/page');
+
+        $result->assertStatus(302);
+        $this->assertFalse($result->response()->hasHeader('X-Inertia-Redirect'));
+    }
+
+    #[DataProvider('providePrefetchRedirectToAFragmentIsUnchanged')]
+    public function testPrefetchRedirectToAFragmentIsUnchanged(string $header): void
+    {
+        $this->withRoutes([
+            ['POST', 'page', static fn () => redirect()->to('/users#top'), ['filter' => 'inertia']],
+        ]);
+
+        $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest', $header => 'prefetch'])->post('/page');
+
+        $result->assertStatus(302);
+        $this->assertFalse($result->response()->hasHeader('X-Inertia-Redirect'));
+    }
+
+    /**
+     * @return iterable<string, array{0: string}>
+     */
+    public static function providePrefetchRedirectToAFragmentIsUnchanged(): iterable
+    {
+        yield 'Purpose' => ['Purpose'];
+
+        yield 'Sec-Purpose' => ['Sec-Purpose'];
+
+        yield 'X-Moz' => ['X-Moz'];
+    }
+
+    public function testAnExtendingFilterOverridesTheFragmentRedirectHandling(): void
+    {
+        $extending = new class () extends InertiaFilter {
+            protected function onRedirectWithFragment(IncomingRequest $request, ResponseInterface $response): ResponseInterface
+            {
+                return service('response')->setStatusCode(418);
+            }
+        };
+
+        config('Filters')->aliases['inertia'] = $extending::class;
+        $this->withRoutes([
+            ['POST', 'page', static fn () => redirect()->to('/users#top'), ['filter' => 'inertia']],
+        ]);
+
+        $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest'])->post('/page')->assertStatus(418);
+    }
+
+    /**
+     * Visits `$url` as an Inertia GET carrying `$headers` with a started session that
+     * already holds an older previous URL, then asks a `POST` route for `redirect()->back()`
+     * and returns where it points.
+     *
+     * @param array<string, string> $headers
+     */
+    private function backLocationAfterAnInertiaGet(string $url, array $headers = []): string
+    {
+        $this->withRoutes([
+            ['GET', 'users', static fn () => service('inertia')
+                ->render('Page/Index', [])
+                ->toResponse(service('request'), service('response')), ['filter' => 'inertia']],
+        ]);
+
+        $this->withSession(['_ci_previous_url' => 'http://localhost/older'])
+            ->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest', 'X-Inertia-Version' => self::CURRENT_VERSION] + $headers)
+            ->get($url)
+            ->assertStatus(200);
+
+        $this->resetPerRequestServices();
+        $this->withRoutes([
+            ['POST', 'back', static fn () => redirect()->back(), ['filter' => 'inertia']],
+        ]);
+
+        return $this->withSession($_SESSION)->post('/back')->response()->getHeaderLine('Location');
+    }
+
+    public function testInertiaGetRecordsItselfAsThePreviousUrl(): void
+    {
+        $this->assertStringEndsWith('/users?page=2', $this->backLocationAfterAnInertiaGet('/users?page=2'));
+    }
+
+    #[DataProvider('provideAnInertiaNonGetRenderingAPageDoesNotRecordItselfAsThePreviousUrl')]
+    public function testAnInertiaNonGetRenderingAPageDoesNotRecordItselfAsThePreviousUrl(string $method): void
+    {
+        $this->withRoutes([
+            [$method, 'form', static fn () => service('inertia')
+                ->render('Page/Index', [])
+                ->toResponse(service('request'), service('response')), ['filter' => 'inertia']],
+        ]);
+
+        $this->withSession(['_ci_previous_url' => 'http://localhost/older'])
+            ->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest', 'X-Inertia-Version' => self::CURRENT_VERSION])
+            ->call($method, '/form')
+            ->assertStatus(200);
+
+        $this->assertSame('http://localhost/older', $_SESSION['_ci_previous_url']);
+    }
+
+    /**
+     * @return iterable<string, array{0: string}>
+     */
+    public static function provideAnInertiaNonGetRenderingAPageDoesNotRecordItselfAsThePreviousUrl(): iterable
+    {
+        yield 'POST' => ['POST'];
+
+        yield 'PUT' => ['PUT'];
+    }
+
+    #[DataProvider('provideAnInertiaGetRenderingAPageWithAnotherStatusIsNotRecorded')]
+    public function testAnInertiaGetRenderingAPageWithAnotherStatusIsNotRecorded(int $status): void
+    {
+        $this->withRoutes([
+            ['GET', 'users', static fn () => service('inertia')
+                ->render('Page/Index', [])
+                ->toResponse(service('request'), service('response'))
+                ->setStatusCode($status), ['filter' => 'inertia']],
+        ]);
+
+        $this->withSession(['_ci_previous_url' => 'http://localhost/older'])
+            ->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest', 'X-Inertia-Version' => self::CURRENT_VERSION])
+            ->get('/users')
+            ->assertStatus($status);
+
+        $this->assertSame('http://localhost/older', $_SESSION['_ci_previous_url']);
+    }
+
+    /**
+     * @return iterable<string, array{0: int}>
+     */
+    public static function provideAnInertiaGetRenderingAPageWithAnotherStatusIsNotRecorded(): iterable
+    {
+        yield '422' => [422];
+
+        yield '201' => [201];
+    }
+
+    public function testAnEmptyInertiaPutWithoutASessionGoesBackToTheRefererWithoutStartingOne(): void
+    {
+        unset($_SESSION);
+        BaseService::resetSingle('session');
+        service('superglobals')->setServer('HTTP_REFERER', 'http://localhost/form');
+        BaseService::resetSingle('request');
+
+        $request = service('request')->withMethod('PUT')->setHeader('X-Inertia', 'true');
+
+        $response = (new InertiaFilter())->after($request, service('response')->setBody(''));
+
+        $this->assertSame(303, $response->getStatusCode());
+        $this->assertStringEndsWith('/form', $response->getHeaderLine('Location'));
+        $this->assertFalse(BaseService::has('session'), 'The session service was constructed.');
+        $this->assertFalse(isset($_SESSION));
+    }
+
+    #[DataProvider('provideAnEmptyInertiaResponseRedirectsWithTheStatusTheProtocolRequiresOverHttp11')]
+    public function testAnEmptyInertiaResponseRedirectsWithTheStatusTheProtocolRequiresOverHttp11(string $method, int $status): void
+    {
+        $superglobals = service('superglobals');
+        $superglobals->setServer('SERVER_PROTOCOL', 'HTTP/1.1');
+        $superglobals->setServer('REQUEST_METHOD', $method);
+        BaseService::resetSingle('request');
+        BaseService::resetSingle('response');
+        BaseService::resetSingle('redirectresponse');
+
+        $request = service('request')->withMethod($method)->setHeader('X-Inertia', 'true');
+
+        $response = (new InertiaFilter())->after($request, service('response')->setBody(''));
+
+        $this->assertSame($status, $response->getStatusCode());
+    }
+
+    /**
+     * @return iterable<string, array{0: string, 1: int}>
+     */
+    public static function provideAnEmptyInertiaResponseRedirectsWithTheStatusTheProtocolRequiresOverHttp11(): iterable
+    {
+        yield 'PATCH' => ['PATCH', 303];
+
+        yield 'PUT' => ['PUT', 303];
+
+        yield 'DELETE' => ['DELETE', 303];
+
+        yield 'GET' => ['GET', 302];
+
+        yield 'POST' => ['POST', 302];
+    }
+
+    public function testTheFragmentRedirectDropsABodyTheControllerWrote(): void
+    {
+        $this->withRoutes([
+            ['POST', 'page', static fn () => service('response')->setBody('written before the redirect')->redirect('/users#top'), ['filter' => 'inertia']],
+        ]);
+
+        $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest'])->post('/page');
+
+        $result->assertStatus(409);
+        $this->assertSame('', (string) $result->response()->getBody());
+        $this->assertFalse($result->response()->hasHeader('Location'));
+    }
+
+    public function testAnEmptyInertiaPutWithALiveSessionGoesBackToTheStoredUrl(): void
+    {
+        $this->withRoutes([
+            ['PUT', 'page', static fn () => service('response')->setBody(''), ['filter' => 'inertia']],
+        ]);
+
+        $result = $this->withSession(['_ci_previous_url' => 'http://localhost/list'])
+            ->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest'])
+            ->call('PUT', 'page');
+
+        $result->assertStatus(303);
+        $this->assertSame('http://localhost/list', $result->response()->getHeaderLine('Location'));
+    }
+
+    public function testAnEmptyInertiaGetWithNoRefererGoesBackToTheSiteBaseUrl(): void
+    {
+        $this->withRoutes([
+            ['GET', 'page', static fn () => service('response')->setBody(''), ['filter' => 'inertia']],
+        ]);
+
+        $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest', 'X-Inertia-Version' => self::CURRENT_VERSION])
+            ->get('/page');
+
+        $result->assertStatus(302);
+        $this->assertSame(site_url('/'), $result->response()->getHeaderLine('Location'));
+    }
+
+    public function testTheFragmentRedirectCarriesNoLocationHeaderEvenWhenTheControllerRedirectedTheSharedResponse(): void
+    {
+        $this->withRoutes([
+            ['POST', 'page', static fn () => service('response')->redirect('/users#top'), ['filter' => 'inertia']],
+        ]);
+
+        $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest'])->post('/page');
+
+        $result->assertStatus(409);
+        $this->assertSame('/users#top', $result->response()->getHeaderLine('X-Inertia-Redirect'));
+        $this->assertFalse($result->response()->hasHeader('Location'));
+    }
+
+    public function testTheFragmentRedirectKeepsTheCookiesAlreadyOnTheResponse(): void
+    {
+        $this->withRoutes([
+            ['POST', 'page', static fn () => service('response')->setCookie('visited', 'yes')->redirect('/users#top'), ['filter' => 'inertia']],
+        ]);
+
+        $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest'])->post('/page');
+
+        $result->assertStatus(409);
+        $this->assertTrue($result->response()->hasCookie('visited'));
+    }
+
+    public function testTheFragmentRedirectOfARedirectResponseCarriesNoLocationHeader(): void
+    {
+        $this->withRoutes([
+            ['POST', 'page', static fn () => redirect()->to('/users#top'), ['filter' => 'inertia']],
+        ]);
+
+        $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest'])->post('/page');
+
+        $result->assertStatus(409);
+        $this->assertFalse($result->response()->hasHeader('Location'));
+    }
+
+    public function testARedirectWithoutAFragmentKeepsItsLocation(): void
+    {
+        $this->withRoutes([
+            ['POST', 'page', static fn () => redirect()->to('/users'), ['filter' => 'inertia']],
+        ]);
+
+        $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest'])->post('/page');
+
+        $result->assertStatus(302);
+        $this->assertStringEndsWith('/users', $result->response()->getHeaderLine('Location'));
+    }
+
+    public function testPartialReloadOfTheRenderedComponentIsNotRecorded(): void
+    {
+        $location = $this->backLocationAfterAnInertiaGet('/users?page=2', ['X-Inertia-Partial-Component' => 'Page/Index']);
+
+        $this->assertStringEndsWith('/older', $location);
+    }
+
+    public function testPartialReloadNamingAnotherComponentIsRecorded(): void
+    {
+        $location = $this->backLocationAfterAnInertiaGet('/users?page=2', ['X-Inertia-Partial-Component' => 'Other/Page']);
+
+        $this->assertStringEndsWith('/users?page=2', $location);
+    }
+
+    #[DataProvider('provideRequestsThatAreNotNavigationsAreNotRecorded')]
+    public function testRequestsThatAreNotNavigationsAreNotRecorded(string $header, string $value): void
+    {
+        $location = $this->backLocationAfterAnInertiaGet('/users', [$header => $value]);
+
+        $this->assertStringEndsWith('/older', $location);
+    }
+
+    /**
+     * @return iterable<string, array{0: string, 1: string}>
+     */
+    public static function provideRequestsThatAreNotNavigationsAreNotRecorded(): iterable
+    {
+        yield 'Purpose prefetch' => ['Purpose', 'prefetch'];
+
+        yield 'Sec-Purpose prefetch' => ['Sec-Purpose', 'prefetch'];
+
+        yield 'X-Moz prefetch' => ['X-Moz', 'prefetch'];
+
+        yield 'X-Moz prefetch in capitals' => ['X-Moz', 'PREFETCH'];
+
+        yield 'Precognition' => ['Precognition', 'true'];
+    }
+
+    public function testAnEmptyInertiaGetIsNotRecordedSoItsBackRedirectDoesNotPointAtItself(): void
+    {
+        $this->withRoutes([
+            ['GET', 'page', static fn () => service('response')->setBody(''), ['filter' => 'inertia']],
+        ]);
+
+        $result = $this->withSession(['_ci_previous_url' => 'http://localhost/older'])
+            ->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest', 'X-Inertia-Version' => self::CURRENT_VERSION])
+            ->get('/page');
+
+        $this->assertSame('http://localhost/older', $_SESSION['_ci_previous_url']);
+        $this->assertStringEndsWith('/older', $result->response()->getHeaderLine('Location'));
+    }
+
+    public function testAnInertiaGetAnsweredWithARedirectIsNotRecorded(): void
+    {
+        $this->withRoutes([
+            ['GET', 'page', static fn () => redirect()->to('/elsewhere'), ['filter' => 'inertia']],
+        ]);
+
+        $this->withSession(['_ci_previous_url' => 'http://localhost/older'])
+            ->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest', 'X-Inertia-Version' => self::CURRENT_VERSION])
+            ->get('/page');
+
+        $this->assertSame('http://localhost/older', $_SESSION['_ci_previous_url']);
+    }
+
+    public function testAStaleVersionVisitIsNotRecorded(): void
+    {
+        $this->withRoutes([$this->renderingRoute()]);
+
+        $this->withSession(['_ci_previous_url' => 'http://localhost/older'])
+            ->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest', 'X-Inertia-Version' => 'stale'])
+            ->get('/page')
+            ->assertStatus(409);
+
+        $this->assertSame('http://localhost/older', $_SESSION['_ci_previous_url']);
+    }
+
+    public function testNothingIsRecordedWhenStorePreviousUrlIsOff(): void
+    {
+        config('Inertia')->storePreviousUrl = false;
+
+        $this->assertStringEndsWith('/older', $this->backLocationAfterAnInertiaGet('/users'));
+    }
+
+    private function renderedPageResponse(): ResponseInterface
+    {
+        return service('response')->setBody('{}')->setHeader('X-Inertia', 'true');
+    }
+
+    private function inertiaGetRequest(): IncomingRequest
+    {
+        return service('request')->withMethod('GET')->setHeader('X-Inertia', 'true');
+    }
+
+    public function testInertiaGetWithoutASessionCookieOrStartedSessionNeverStartsOne(): void
+    {
+        unset($_SESSION);
+        BaseService::injectMock('session', new class () {
+            public function __call(string $name, array $arguments): never
+            {
+                Assert::fail("The session service was used through {$name}().");
+            }
+        });
+
+        $response = (new InertiaFilter())->after($this->inertiaGetRequest(), $this->renderedPageResponse());
+
+        $this->assertSame(200, $response->getStatusCode());
+        $this->assertFalse(isset($_SESSION));
+    }
+
+    public function testInertiaGetCarryingTheSessionCookieIsRecordedEvenBeforeTheSessionStarted(): void
+    {
+        unset($_SESSION);
+        $request = $this->inertiaGetRequest();
+        $request->setGlobal('cookie', [(string) config('Session')->cookieName => 'abc']);
+
+        (new InertiaFilter())->after($request, $this->renderedPageResponse());
+
+        $this->assertSame((string) $request->getUri(), $_SESSION['_ci_previous_url']);
+    }
+
+    public function testNonInertiaGetIsLeftToCodeIgniter(): void
+    {
+        $this->withRoutes([$this->renderingRoute()]);
+
+        $this->withSession(['_ci_previous_url' => 'http://localhost/older'])->get('/page');
+
+        $this->assertStringEndsWith('/page', $_SESSION['_ci_previous_url']);
     }
 
     public function testAnExtendingFilterSharesItsOwnPropsNextToErrors(): void

@@ -28,6 +28,18 @@ class Inertia extends BaseConfig
     public bool $encryptHistory = false;
 
     /**
+     * Whether `InertiaFilter` records an Inertia `GET` as CodeIgniter's previous URL
+     * (`_ci_previous_url`), so `redirect()->back()` returns to the page the visitor is on.
+     * CodeIgniter stores that URL only for non-AJAX HTML responses, so after an Inertia visit
+     * `back()` would return to the last full page load; this is why it defaults on here while
+     * inertia-laravel defaults `store_previous_url` off, where `back()` reads the `Referer`
+     * header first and is already correct. Only an Inertia `GET` answered with a rendered page
+     * is recorded; a redirect, an empty `200`, a `409`, a partial reload of the rendered
+     * component, a prefetch and a Precognition request never are.
+     */
+    public bool $storePreviousUrl = true;
+
+    /**
      * Resolves the asset version sent on every page object. A client whose
      * `X-Inertia-Version` differs from this value is running assets from a previous deploy
      * and is forced into a hard reload rather than fed data from the new backend.
