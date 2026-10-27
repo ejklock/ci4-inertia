@@ -4,23 +4,31 @@ declare(strict_types=1);
 
 namespace Ejklock\Ci4Inertia\Tests\Ssr;
 
+use ArrayObject;
 use Closure;
 use CodeIgniter\Events\Events;
 use CodeIgniter\HTTP\CURLRequest;
+use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\ResponseInterface;
+use CodeIgniter\HTTP\SiteURI;
 use CodeIgniter\HTTP\URI;
+use CodeIgniter\HTTP\UserAgent;
 use CodeIgniter\Test\CIUnitTestCase;
 use CodeIgniter\Test\Mock\MockCURLRequest;
 use Config\App as AppConfig;
 use Config\Services;
 use Ejklock\Ci4Inertia\Config\Inertia as InertiaConfig;
 use Ejklock\Ci4Inertia\Ssr\BundleDetector;
+use Ejklock\Ci4Inertia\Ssr\ConfiguresSsrRequests;
+use Ejklock\Ci4Inertia\Ssr\DisablesSsr;
+use Ejklock\Ci4Inertia\Ssr\ExcludesSsrPaths;
 use Ejklock\Ci4Inertia\Ssr\Gateway;
 use Ejklock\Ci4Inertia\Ssr\HttpGateway;
 use Ejklock\Ci4Inertia\Ssr\Response;
 use Ejklock\Ci4Inertia\Ssr\SsrErrorType;
 use Ejklock\Ci4Inertia\Ssr\SsrException;
 use Ejklock\Ci4Inertia\Ssr\SsrRenderFailed;
+use PHPUnit\Framework\Attributes\DataProvider;
 use ReflectionMethod;
 use ReflectionProperty;
 use RuntimeException;
@@ -625,7 +633,7 @@ final class HttpGatewayTest extends CIUnitTestCase
     public function testASubclassCanSwitchSsrOffThroughTheEnabledHook(): void
     {
         $gateway = new class ($this->config, fn (array $options): CURLRequest => $this->makeClient($options), $this->detector()) extends HttpGateway {
-            protected function ssrIsEnabled(): bool
+            protected function ssrIsEnabled(IncomingRequest $request): bool
             {
                 return false;
             }
@@ -713,5 +721,389 @@ final class HttpGatewayTest extends CIUnitTestCase
         $this->assertInstanceOf(HttpGateway::class, $gateway);
         $this->assertSame($gateway, service('inertiaSsrGateway'));
         $this->assertNotSame($gateway, service('inertiaSsrGateway', false));
+    }
+
+    private function httpGateway(): HttpGateway
+    {
+        $gateway = $this->gateway();
+        $this->assertInstanceOf(HttpGateway::class, $gateway);
+
+        return $gateway;
+    }
+
+    private function requestFor(string $route, string $baseUrl = 'http://example.com/', ?string $requestUri = null, string $indexPage = ''): IncomingRequest
+    {
+        $config            = new AppConfig();
+        $config->baseURL   = $baseUrl;
+        $config->indexPage = $indexPage;
+
+        return new class ($config, new SiteURI($config, $route), null, new UserAgent(), $requestUri) extends IncomingRequest {
+            public function __construct(AppConfig $config, URI $uri, ?string $body, UserAgent $userAgent, private readonly ?string $requestUri)
+            {
+                parent::__construct($config, $uri, $body, $userAgent);
+            }
+
+            public function getServer($index = null, $filter = null, $flags = null)
+            {
+                return $index === 'REQUEST_URI' ? $this->requestUri : parent::getServer($index, $filter, $flags);
+            }
+        };
+    }
+
+    private function dispatchFor(HttpGateway $gateway, string $route, string $baseUrl = 'http://example.com/', ?string $requestUri = null, string $indexPage = ''): void
+    {
+        $this->answer('200 OK', '{"body":"b"}');
+        $gateway->dispatch($this->page(), $this->requestFor($route, $baseUrl, $requestUri, $indexPage));
+    }
+
+    public function testTheGatewayImplementsTheSsrControlInterfaces(): void
+    {
+        $gateway = $this->gateway();
+
+        $this->assertInstanceOf(DisablesSsr::class, $gateway);
+        $this->assertInstanceOf(ExcludesSsrPaths::class, $gateway);
+        $this->assertInstanceOf(ConfiguresSsrRequests::class, $gateway);
+    }
+
+    public function testATrueConditionSwitchesSsrOffEvenWhenTheConfigEnablesIt(): void
+    {
+        $this->config->ssrEnabled = true;
+        $gateway                  = $this->httpGateway();
+        $gateway->disable(true);
+
+        $this->dispatchFor($gateway, 'users');
+
+        $this->assertSame(0, $this->sent);
+    }
+
+    public function testAFalseConditionKeepsSsrOnEvenWhenTheConfigDisablesIt(): void
+    {
+        $this->config->ssrEnabled = false;
+        $gateway                  = $this->httpGateway();
+        $gateway->disable(false);
+
+        $this->dispatchFor($gateway, 'users');
+
+        $this->assertSame(1, $this->sent);
+    }
+
+    public function testAClosureConditionRunsAtDispatchTime(): void
+    {
+        /** @var ArrayObject<int, int> $calls */
+        $calls = new ArrayObject();
+        /** @var ArrayObject<int, bool> $off */
+        $off     = new ArrayObject([true]);
+        $gateway = $this->httpGateway();
+        $gateway->disable(static function () use ($calls, $off): bool {
+            $calls->append(1);
+
+            return $off[0];
+        });
+
+        $this->assertCount(0, $calls);
+
+        $this->dispatchFor($gateway, 'users');
+        $this->assertSame(0, $this->sent);
+        $this->assertCount(1, $calls);
+
+        $off[0] = false;
+        $this->dispatchFor($gateway, 'users');
+        $this->assertSame(1, $this->sent);
+    }
+
+    public function testTheConfigFlagDecidesWhenNoConditionIsSet(): void
+    {
+        $this->config->ssrEnabled = false;
+        $this->dispatchFor($this->httpGateway(), 'users');
+        $this->assertSame(0, $this->sent);
+
+        $this->config->ssrEnabled = true;
+        $this->dispatchFor($this->httpGateway(), 'users');
+        $this->assertSame(1, $this->sent);
+    }
+
+    public function testAnExcludedPathSkipsSsrOnTopOfAFalseCondition(): void
+    {
+        $gateway = $this->httpGateway();
+        $gateway->except('admin/*');
+        $gateway->disable(false);
+
+        $this->dispatchFor($gateway, 'admin/users');
+
+        $this->assertSame(0, $this->sent);
+    }
+
+    /**
+     * @param list<string>|string $pattern
+     */
+    #[DataProvider('provideExcludedPathsSkipSsr')]
+    public function testExcludedPathsSkipSsr(array|string $pattern, string $route, bool $excluded): void
+    {
+        $gateway = $this->httpGateway();
+        $gateway->except($pattern);
+
+        $this->dispatchFor($gateway, $route);
+
+        $this->assertSame($excluded ? 0 : 1, $this->sent);
+    }
+
+    /**
+     * @return iterable<string, array{list<string>|string, string, bool}>
+     */
+    public static function provideExcludedPathsSkipSsr(): iterable
+    {
+        yield 'wildcard matches a nested path' => ['admin/*', 'admin/users', true];
+
+        yield 'wildcard is anchored at the start' => ['admin/*', 'administrator', false];
+
+        yield 'matching is case sensitive' => ['admin/*', 'Admin/users', false];
+
+        yield 'slashes around a pattern are trimmed' => ['/dashboard/', 'dashboard', true];
+
+        yield 'a trailing slash on the request path is ignored' => ['dashboard', 'dashboard/', true];
+
+        yield 'a slash pattern is the root' => ['/', '/', true];
+
+        yield 'a slash pattern is not another path' => ['/', 'users', false];
+
+        yield 'an exact pattern does not match a longer path' => ['dash', 'dashboard', false];
+
+        yield 'a regex character is literal' => ['a.c', 'abc', false];
+
+        yield 'a wildcard crosses a decoded newline' => ['admin/*', 'admin/a%0Ab', true];
+
+        yield 'a full url pattern matches with its query' => ['http://example.com/reports?page=2', 'reports?page=2', true];
+
+        yield 'a full url pattern with a query does not match a request without it' => ['http://example.com/reports?page=2', 'reports', false];
+
+        yield 'a full url pattern without a query does not match a request with one' => ['http://example.com/reports', 'reports?page=2', false];
+
+        yield 'a query is sorted before matching' => ['http://example.com/r?a=1&b=2', 'r?b=2&a=1', true];
+
+        yield 'a full url pattern ignores a trailing slash on the request' => ['http://example.com/dashboard', 'dashboard/', true];
+
+        yield 'a full url pattern without a path matches the root' => ['http://example.com', '/', true];
+
+        yield 'a root query keeps the slash before it' => ['http://example.com/?x=1', '?x=1', true];
+
+        yield 'a full url pattern for another host does not match' => ['http://other.test/reports*', 'reports', false];
+
+        yield 'a percent encoded path matches the decoded pattern' => ['café', 'caf%C3%A9', true];
+
+        yield 'a list of patterns' => [['a', 'b'], 'b', true];
+    }
+
+    public function testExcludedPathsAccumulateAcrossCalls(): void
+    {
+        $gateway = $this->httpGateway();
+        $gateway->except(['a', 'b']);
+        $gateway->except('c');
+
+        foreach (['a', 'b', 'c'] as $route) {
+            $this->dispatchFor($gateway, $route);
+        }
+
+        $this->assertSame(0, $this->sent);
+
+        $this->dispatchFor($gateway, 'd');
+        $this->assertSame(1, $this->sent);
+    }
+
+    public function testTheRoutePathIsMatchedUnderASubfolderBaseUrl(): void
+    {
+        $gateway = $this->httpGateway();
+        $gateway->except('admin/*');
+
+        $this->dispatchFor($gateway, 'admin/users', 'http://example.com/app/');
+        $this->assertSame(0, $this->sent);
+
+        $other = $this->httpGateway();
+        $other->except('app/*');
+        $this->dispatchFor($other, 'admin/users', 'http://example.com/app/');
+        $this->assertSame(1, $this->sent);
+    }
+
+    public function testAFullUrlPatternCarriesTheSubfolderBaseUrl(): void
+    {
+        $gateway = $this->httpGateway();
+        $gateway->except('http://example.com/app/admin*');
+
+        $this->dispatchFor($gateway, 'admin/users', 'http://example.com/app/');
+
+        $this->assertSame(0, $this->sent);
+    }
+
+    /**
+     * @param array{string, string, string, ?string, string} $request base URL, route, index page, REQUEST_URI
+     */
+    #[DataProvider('provideAFullUrlPatternMatchesTheUrlTheClientRequested')]
+    public function testAFullUrlPatternMatchesTheUrlTheClientRequested(string $pattern, array $request, bool $excluded): void
+    {
+        $gateway = $this->httpGateway();
+        $gateway->except($pattern);
+
+        [$baseUrl, $route, $indexPage, $requestUri] = $request;
+        $this->dispatchFor($gateway, $route, $baseUrl, $requestUri, $indexPage);
+
+        $this->assertSame($excluded ? 0 : 1, $this->sent);
+    }
+
+    /**
+     * @return iterable<string, array{string, array{string, string, string, ?string}, bool}>
+     */
+    public static function provideAFullUrlPatternMatchesTheUrlTheClientRequested(): iterable
+    {
+        $base = 'http://example.com/';
+
+        yield 'a rewritten request has no index page' => ['http://example.com/reports*', [$base, 'reports', 'index.php', '/reports?page=2'], true];
+
+        yield 'a request through the index page does' => ['http://example.com/reports*', [$base, 'reports', 'index.php', '/index.php/reports'], false];
+
+        yield 'a pattern naming the index page matches it' => ['http://example.com/index.php/reports*', [$base, 'reports', 'index.php', '/index.php/reports'], true];
+
+        yield 'a subfolder is part of the url' => ['http://example.com/app/admin/*', ['http://example.com/app/', 'admin/users', '', '/app/admin/users'], true];
+
+        yield 'a path pattern still matches the route path under a subfolder' => ['admin/*', ['http://example.com/app/', 'admin/users', '', '/app/admin/users'], true];
+
+        yield 'an absolute form request uri is reduced to its path' => ['http://example.com/reports', [$base, 'reports', '', 'http://example.com/reports'], true];
+
+        yield 'a dot in a query key is kept' => ['http://example.com/r?a.b=1', [$base, 'r', '', '/r?a.b=1'], true];
+
+        yield 'a plus in a query value is rebuilt as an encoded space' => ['http://example.com/r?q=a%20b', [$base, 'r', '', '/r?q=a+b'], true];
+
+        yield 'a raw nul ends a query pair' => ['http://example.com/r?a=1', [$base, 'r', '', "/r?a=1\0x"], true];
+
+        yield 'an encoded nul ends a query key' => ['http://example.com/r?a=1', [$base, 'r', '', '/r?a%00x=1'], true];
+
+        yield 'leading spaces of a query key are dropped' => ['http://example.com/r?a=1', [$base, 'r', '', '/r?%20%20a=1'], true];
+
+        yield 'a numeric looking key hex is kept as a string key' => ['http://example.com/r?e=1', [$base, 'r', '', '/r?e=1'], true];
+
+        yield 'a bracketed key keeps its brackets' => ['http://example.com/r?a%5B0%5D=1', [$base, 'r', '', '/r?a[0]=1'], true];
+
+        yield 'a question mark inside the query is kept' => ['http://example.com/r?a=b%3Fc', [$base, 'r', '', '/r?a=b?c'], true];
+
+        yield 'the query comes from the request uri' => ['http://example.com/reports?page=2', [$base, 'reports', '', '/reports?page=2'], true];
+    }
+
+    public function testASubclassDecidesWhetherSsrIsEnabledForTheRequest(): void
+    {
+        $gateway = new class ($this->config, fn (array $options): CURLRequest => $this->makeClient($options), $this->detector()) extends HttpGateway {
+            public ?IncomingRequest $seen = null;
+
+            protected function ssrIsEnabled(IncomingRequest $request): bool
+            {
+                $this->seen = $request;
+
+                return true;
+            }
+        };
+        $gateway->except('admin/*');
+        $request = $this->requestFor('admin/users');
+        $this->answer('200 OK', '{"body":"b"}');
+
+        $gateway->dispatch($this->page(), $request);
+
+        $this->assertSame($request, $gateway->seen);
+        $this->assertSame(1, $this->sent);
+    }
+
+    public function testASubclassDecidesWhichRequestsAreExcluded(): void
+    {
+        $gateway = new class ($this->config, fn (array $options): CURLRequest => $this->makeClient($options), $this->detector()) extends HttpGateway {
+            protected function inExceptArray(IncomingRequest $request): bool
+            {
+                return str_starts_with($request->getPath(), 'private');
+            }
+        };
+        $gateway->except('public/*');
+
+        $this->dispatchFor($gateway, 'private/area');
+        $this->assertSame(0, $this->sent);
+
+        $this->dispatchFor($gateway, 'public/area');
+        $this->assertSame(1, $this->sent);
+    }
+
+    public function testTheCurrentRequestIsUsedWhenNoneIsPassed(): void
+    {
+        Services::injectMock('request', $this->requestFor('admin/users'));
+        $gateway = $this->httpGateway();
+        $gateway->except('admin/*');
+        $this->answer('200 OK', '{"body":"b"}');
+
+        $gateway->dispatch($this->page());
+
+        $this->assertSame(0, $this->sent);
+    }
+
+    public function testAConfiguratorAddsAHeaderToTheSentRequest(): void
+    {
+        $gateway = $this->httpGateway();
+        $gateway->configureRequestUsing(static fn (CURLRequest $client): CURLRequest => $client->setHeader('X-Trace', 'abc'));
+
+        $this->dispatchFor($gateway, 'users');
+
+        $this->assertContains('X-Trace: abc', $this->client->curl_options[CURLOPT_HTTPHEADER]);
+    }
+
+    public function testAConfiguratorReturningNothingKeepsTheOriginalClient(): void
+    {
+        $gateway = $this->httpGateway();
+        $gateway->configureRequestUsing(static function (CURLRequest $client): ?CURLRequest {
+            $client->setHeader('X-Trace', 'abc');
+
+            return null;
+        });
+
+        $this->dispatchFor($gateway, 'users');
+
+        $this->assertSame(1, $this->sent);
+        $this->assertContains('X-Trace: abc', $this->client->curl_options[CURLOPT_HTTPHEADER]);
+    }
+
+    public function testAConfiguratorCanReturnAnotherClient(): void
+    {
+        $other   = null;
+        $gateway = $this->httpGateway();
+        $gateway->configureRequestUsing(function () use (&$other): CURLRequest {
+            $other = $this->makeClient([])->setHeader('X-Other', '1');
+
+            return $other;
+        });
+
+        $this->dispatchFor($gateway, 'users');
+
+        $this->assertSame($other, $this->client);
+        $this->assertContains('X-Other: 1', $this->client->curl_options[CURLOPT_HTTPHEADER]);
+    }
+
+    public function testClearingTheConfiguratorRestoresThePlainClient(): void
+    {
+        $gateway = $this->httpGateway();
+        $gateway->configureRequestUsing(static fn (CURLRequest $client): CURLRequest => $client->setHeader('X-Trace', 'abc'));
+        $gateway->configureRequestUsing();
+
+        $this->dispatchFor($gateway, 'users');
+
+        $this->assertNotContains('X-Trace: abc', $this->client->curl_options[CURLOPT_HTTPHEADER]);
+    }
+
+    public function testTheConfiguratorRunsOncePerDispatch(): void
+    {
+        /** @var ArrayObject<int, int> $calls */
+        $calls   = new ArrayObject();
+        $gateway = $this->httpGateway();
+        $gateway->configureRequestUsing(static function () use ($calls): ?CURLRequest {
+            $calls->append(1);
+
+            return null;
+        });
+
+        $this->dispatchFor($gateway, 'users');
+        $this->assertCount(1, $calls);
+
+        $this->dispatchFor($gateway, 'users');
+        $this->assertCount(2, $calls);
     }
 }

@@ -7,18 +7,31 @@ namespace Ejklock\Ci4Inertia\Ssr;
 use Closure;
 use CodeIgniter\Events\Events;
 use CodeIgniter\HTTP\CURLRequest;
+use CodeIgniter\HTTP\IncomingRequest;
 use Ejklock\Ci4Inertia\Config\Inertia;
+use Ejklock\Ci4Inertia\ResolvesCallables;
 use Exception;
 
 /**
  * Posts the page to an Inertia SSR server over HTTP: the Vite dev server when the hot file
  * exists, the production server otherwise. The protected methods are the extension points an
- * application overrides in a subclass.
+ * application overrides in a subclass. SSR can be switched off with a condition, skipped for
+ * paths and its request adjusted before it is sent.
  */
-class HttpGateway implements Gateway
+class HttpGateway implements ConfiguresSsrRequests, DisablesSsr, ExcludesSsrPaths, Gateway
 {
+    use ResolvesCallables;
+
     private const CONNECT_TIMEOUT = 10;
     private const DEFAULT_TIMEOUT = 30;
+
+    /**
+     * @var list<string>
+     */
+    protected array $except = [];
+
+    protected bool|Closure|null $disabled   = null;
+    protected ?Closure $requestConfigurator = null;
 
     /**
      * @param Closure(array<string, mixed>): CURLRequest $clientFactory builds a fresh client from the
@@ -32,9 +45,14 @@ class HttpGateway implements Gateway
     ) {
     }
 
-    public function dispatch(array $page): ?Response
+    /**
+     * @param array<string, mixed> $page
+     * @param IncomingRequest|null $request the request whose path is checked against the excluded
+     *                                      paths; the current request when omitted
+     */
+    public function dispatch(array $page, ?IncomingRequest $request = null): ?Response
     {
-        if (! $this->ssrIsEnabled()) {
+        if (! $this->ssrIsEnabled($request ??= service('request'))) {
             return null;
         }
 
@@ -76,6 +94,21 @@ class HttpGateway implements Gateway
         }
     }
 
+    public function disable(bool|Closure $condition): void
+    {
+        $this->disabled = $condition;
+    }
+
+    public function except(array|string $paths): void
+    {
+        $this->except = array_merge($this->except, (array) $paths);
+    }
+
+    public function configureRequestUsing(?Closure $callback = null): void
+    {
+        $this->requestConfigurator = $callback;
+    }
+
     /**
      * The production SSR server URL for the given path.
      */
@@ -86,17 +119,24 @@ class HttpGateway implements Gateway
 
     /**
      * A fresh HTTP client for the SSR server. Without a configured timeout it gives up after 30
-     * seconds, and it always waits at most 10 seconds to connect.
+     * seconds, and it always waits at most 10 seconds to connect. The request configurator, when
+     * set, receives it and may return a replacement.
      */
     protected function pendingRequest(): CURLRequest
     {
         $timeout = $this->config->ssrTimeout;
 
-        return ($this->clientFactory)([
+        $client = ($this->clientFactory)([
             'http_errors'     => false,
             'connect_timeout' => self::CONNECT_TIMEOUT,
             'timeout'         => $timeout !== null && $timeout > 0 ? $timeout : self::DEFAULT_TIMEOUT,
         ]);
+
+        if ($this->requestConfigurator === null) {
+            return $client;
+        }
+
+        return ($this->requestConfigurator)($client) ?? $client;
     }
 
     /**
@@ -126,9 +166,122 @@ class HttpGateway implements Gateway
         }
     }
 
-    protected function ssrIsEnabled(): bool
+    /**
+     * Whether SSR is enabled for the request: the condition set by `disable()` when there is one,
+     * which replaces the `ssrEnabled` config flag, and the flag otherwise, and the request's
+     * path not being excluded.
+     */
+    protected function ssrIsEnabled(IncomingRequest $request): bool
     {
-        return $this->config->ssrEnabled;
+        $enabled = $this->disabled === null
+            ? $this->config->ssrEnabled
+            : ! $this->resolveCallable($this->disabled);
+
+        return $enabled && ! $this->inExceptArray($request);
+    }
+
+    /**
+     * Whether the request's path, or the full URL the client requested with its query, matches an
+     * excluded pattern. A pattern is trimmed of slashes, except `/` itself, which is the root.
+     */
+    protected function inExceptArray(IncomingRequest $request): bool
+    {
+        $path = rawurldecode(trim($request->getPath(), '/'));
+        $path = $path === '' ? '/' : $path;
+        $url  = $this->fullUrl($request);
+
+        foreach ($this->except as $pattern) {
+            $pattern = $pattern === '/' ? $pattern : trim($pattern, '/');
+
+            if ($this->matches($pattern, $url) || $this->matches($pattern, $path)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The URL the client requested, normalized like Laravel's `fullUrl()`: no trailing slash on the
+     * path, and the query sorted by key. The path and query are the server's raw request URI, so
+     * the index page shows only when the client used it; without one, the request URI's path and
+     * query are used.
+     */
+    private function fullUrl(IncomingRequest $request): string
+    {
+        $uri        = $request->getUri();
+        $requestUri = $request->getServer('REQUEST_URI');
+
+        if (is_string($requestUri) && $requestUri !== '') {
+            $relative = preg_replace('#^[a-z][a-z0-9+.-]*://[^/?\\#]*#i', '', $requestUri) ?? $requestUri;
+        } else {
+            $relative = $uri->getPath();
+
+            if ($uri->getQuery() !== '') {
+                $relative .= '?' . $uri->getQuery();
+            }
+        }
+
+        [$path, $query] = explode('?', $relative, 2) + [1 => ''];
+        $url            = rtrim($uri->getScheme() . '://' . $uri->getAuthority() . '/' . ltrim($path, '/'), '/');
+
+        $parameters = $this->parseQuery($query);
+        ksort($parameters);
+        $query = http_build_query($parameters, '', '&', PHP_QUERY_RFC3986);
+
+        if ($query === '') {
+            return $url;
+        }
+
+        return $url . (trim($path, '/') === '' ? '/?' : '?') . $query;
+    }
+
+    /**
+     * Parses a query string like Symfony's `HeaderUtils::parseQuery`, which, unlike `parse_str`,
+     * keeps dots and spaces in the keys: each key is hex encoded around the parse and decoded after.
+     *
+     * @return array<int|string, mixed>
+     */
+    private function parseQuery(string $query): array
+    {
+        $pairs = [];
+
+        foreach (explode('&', $query) as $pair) {
+            $pair = explode("\0", $pair)[0];
+            $at   = strpos($pair, '=');
+            $key  = urldecode($at === false ? $pair : substr($pair, 0, $at));
+            $rest = $at === false ? '' : substr($pair, $at);
+            $key  = ltrim(explode("\0", $key)[0], ' ');
+            $open = strpos($key, '[');
+
+            $pairs[] = $open === false
+                ? bin2hex($key) . $rest
+                : bin2hex(substr($key, 0, $open)) . rawurlencode(substr($key, $open)) . $rest;
+        }
+
+        parse_str(implode('&', $pairs), $parsed);
+
+        $parameters = [];
+
+        foreach ($parsed as $key => $value) {
+            $key        = (string) $key;
+            $underscore = strpos($key, '_');
+
+            if ($underscore === false) {
+                $parameters[(string) hex2bin($key)] = $value;
+            } else {
+                $parameters[substr_replace($key, hex2bin(substr($key, 0, $underscore)) . '[', 0, 1 + $underscore)] = $value;
+            }
+        }
+
+        return $parameters;
+    }
+
+    private function matches(string $pattern, string $value): bool
+    {
+        $regex = str_replace('\\*', '.*', preg_quote($pattern, '#'));
+
+        return preg_match('#^' . $regex . '\\z#su', $value) === 1;
     }
 
     protected function shouldEnsureBundleExists(): bool

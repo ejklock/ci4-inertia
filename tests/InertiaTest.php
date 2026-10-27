@@ -5,13 +5,18 @@ declare(strict_types=1);
 namespace Ejklock\Ci4Inertia\Tests;
 
 use ArrayObject;
+use CodeIgniter\Config\BaseService;
+use CodeIgniter\HTTP\CURLRequest;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\SiteURI;
+use CodeIgniter\HTTP\URI;
 use CodeIgniter\HTTP\UserAgent;
 use CodeIgniter\I18n\Time;
 use CodeIgniter\Test\CIUnitTestCase;
+use CodeIgniter\Test\Mock\MockCURLRequest;
 use Config\App as AppConfig;
 use Config\Services;
+use Ejklock\Ci4Inertia\Config\Inertia as InertiaConfig;
 use Ejklock\Ci4Inertia\ExceptionResponse;
 use Ejklock\Ci4Inertia\Inertia;
 use Ejklock\Ci4Inertia\InertiaExceptionHandler;
@@ -20,6 +25,11 @@ use Ejklock\Ci4Inertia\ProvidesInertiaProperties;
 use Ejklock\Ci4Inertia\RenderContext;
 use Ejklock\Ci4Inertia\ResponseFactory;
 use Ejklock\Ci4Inertia\ScrollMetadata;
+use Ejklock\Ci4Inertia\Ssr\BundleDetector;
+use Ejklock\Ci4Inertia\Ssr\Gateway;
+use Ejklock\Ci4Inertia\Ssr\HttpGateway;
+use Ejklock\Ci4Inertia\Ssr\Response;
+use LogicException;
 use PHPUnit\Framework\AssertionFailedError;
 use ReflectionClass;
 use ReflectionMethod;
@@ -34,6 +44,8 @@ use RuntimeException;
  */
 final class InertiaTest extends CIUnitTestCase
 {
+    private int $ssrRequests = 0;
+
     protected function tearDown(): void
     {
         Services::reset(true);
@@ -438,6 +450,111 @@ final class InertiaTest extends CIUnitTestCase
             ),
             'return' => (string) $method->getReturnType(),
         ];
+    }
+
+    private function injectSsrGateway(): HttpGateway
+    {
+        $config                        = new InertiaConfig();
+        $config->ssrEnabled            = true;
+        $config->ssrEnsureBundleExists = false;
+        $config->ssrHotFile            = '/nonexistent/hot';
+
+        $gateway = new HttpGateway(
+            $config,
+            function (array $options): CURLRequest {
+                $this->ssrRequests++;
+
+                return (new MockCURLRequest(config(AppConfig::class), new URI(), service('response', null, false), $options))
+                    ->setOutput("HTTP/1.1 200 OK\r\n\r\n{}");
+            },
+            new BundleDetector($config),
+        );
+        BaseService::injectMock('inertiaSsrGateway', $gateway);
+
+        return $gateway;
+    }
+
+    private function dispatchSsr(HttpGateway $gateway, string $route): void
+    {
+        $config            = new AppConfig();
+        $config->indexPage = '';
+        $gateway->dispatch(['component' => 'C'], new IncomingRequest($config, new SiteURI($config, $route), null, new UserAgent()));
+    }
+
+    private function injectPlainGateway(): void
+    {
+        BaseService::injectMock('inertiaSsrGateway', new class () implements Gateway {
+            public function dispatch(array $page): ?Response
+            {
+                return null;
+            }
+        });
+    }
+
+    public function testDisableSsrWithoutAnArgumentDisablesSsr(): void
+    {
+        $gateway = $this->injectSsrGateway();
+
+        Inertia::disableSsr();
+
+        $this->dispatchSsr($gateway, 'users');
+        $this->assertSame(0, $this->ssrRequests);
+    }
+
+    public function testDisableSsrWithAFalseConditionKeepsSsrOn(): void
+    {
+        $gateway = $this->injectSsrGateway();
+
+        Inertia::disableSsr(false);
+
+        $this->dispatchSsr($gateway, 'users');
+        $this->assertSame(1, $this->ssrRequests);
+    }
+
+    public function testWithoutSsrExcludesPathsFromTheSharedGateway(): void
+    {
+        $gateway = $this->injectSsrGateway();
+
+        Inertia::withoutSsr('admin/*');
+
+        $this->dispatchSsr($gateway, 'admin/x');
+        $this->assertSame(0, $this->ssrRequests);
+        $this->dispatchSsr($gateway, 'users');
+        $this->assertSame(1, $this->ssrRequests);
+    }
+
+    public function testConfigureSsrRequestUsingReachesTheSharedGateway(): void
+    {
+        $gateway = $this->injectSsrGateway();
+        /** @var ArrayObject<int, int> $calls */
+        $calls = new ArrayObject();
+
+        Inertia::configureSsrRequestUsing(static function () use ($calls): ?CURLRequest {
+            $calls->append(1);
+
+            return null;
+        });
+
+        $this->dispatchSsr($gateway, 'users');
+        $this->assertCount(1, $calls);
+    }
+
+    public function testTheSsrControlsRefuseAGatewayThatSupportsNone(): void
+    {
+        $this->injectPlainGateway();
+
+        foreach ([
+            [static fn () => Inertia::disableSsr(), 'The configured SSR gateway does not support disabling server-side rendering conditionally.'],
+            [static fn () => Inertia::withoutSsr('a'), 'The configured SSR gateway does not support excluding paths from server-side rendering.'],
+            [static fn () => Inertia::configureSsrRequestUsing(), 'The configured SSR gateway does not support configuring server-side rendering requests.'],
+        ] as [$call, $message]) {
+            try {
+                $call();
+                $this->fail('Expected a LogicException.');
+            } catch (LogicException $e) {
+                $this->assertSame($message, $e->getMessage());
+            }
+        }
     }
 }
 

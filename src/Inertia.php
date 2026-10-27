@@ -6,6 +6,7 @@ namespace Ejklock\Ci4Inertia;
 
 use BackedEnum;
 use Closure;
+use CodeIgniter\HTTP\CURLRequest;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\RedirectResponse;
 use CodeIgniter\HTTP\ResponseInterface;
@@ -48,6 +49,34 @@ final class Inertia
     public static function encryptHistory(bool $encrypt = true): void
     {
         self::factory()->encryptHistory($encrypt);
+    }
+
+    /**
+     * @see ResponseFactory::disableSsr()
+     */
+    public static function disableSsr(bool|Closure $condition = true): void
+    {
+        self::factory()->disableSsr($condition);
+    }
+
+    /**
+     * @see ResponseFactory::withoutSsr()
+     *
+     * @param list<string>|string $paths
+     */
+    public static function withoutSsr(array|string $paths): void
+    {
+        self::factory()->withoutSsr($paths);
+    }
+
+    /**
+     * @see ResponseFactory::configureSsrRequestUsing()
+     *
+     * @param (Closure(CURLRequest): ?CURLRequest)|null $callback
+     */
+    public static function configureSsrRequestUsing(?Closure $callback = null): void
+    {
+        self::factory()->configureSsrRequestUsing($callback);
     }
 
     /**

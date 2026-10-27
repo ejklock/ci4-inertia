@@ -7,12 +7,17 @@ namespace Ejklock\Ci4Inertia;
 use ArrayAccess;
 use BackedEnum;
 use Closure;
+use CodeIgniter\HTTP\CURLRequest;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\RedirectResponse;
 use CodeIgniter\HTTP\ResponseInterface;
+use Ejklock\Ci4Inertia\Ssr\ConfiguresSsrRequests;
+use Ejklock\Ci4Inertia\Ssr\DisablesSsr;
+use Ejklock\Ci4Inertia\Ssr\ExcludesSsrPaths;
 use Ejklock\Ci4Inertia\Support\Header;
 use Ejklock\Ci4Inertia\Support\SessionKey;
 use InvalidArgumentException;
+use LogicException;
 use UnitEnum;
 
 /**
@@ -196,6 +201,60 @@ final class ResponseFactory
     public function encryptHistory(bool $encrypt = true): void
     {
         $this->encryptHistory = $encrypt;
+    }
+
+    /**
+     * Disables server-side rendering, or only while the condition holds: a closure is called on
+     * each dispatch. A set condition replaces the `ssrEnabled` config flag.
+     *
+     * @throws LogicException when the SSR gateway cannot be disabled conditionally
+     */
+    public function disableSsr(bool|Closure $condition = true): void
+    {
+        $gateway = service('inertiaSsrGateway');
+
+        if (! $gateway instanceof DisablesSsr) {
+            throw new LogicException('The configured SSR gateway does not support disabling server-side rendering conditionally.');
+        }
+
+        $gateway->disable($condition);
+    }
+
+    /**
+     * Excludes the given paths from server-side rendering.
+     *
+     * @param list<string>|string $paths
+     *
+     * @throws LogicException when the SSR gateway cannot exclude paths
+     */
+    public function withoutSsr(array|string $paths): void
+    {
+        $gateway = service('inertiaSsrGateway');
+
+        if (! $gateway instanceof ExcludesSsrPaths) {
+            throw new LogicException('The configured SSR gateway does not support excluding paths from server-side rendering.');
+        }
+
+        $gateway->except($paths);
+    }
+
+    /**
+     * Adjusts the HTTP request sent to the SSR server: the callback receives the client and may
+     * return a replacement. Null clears the callback.
+     *
+     * @param (Closure(CURLRequest): ?CURLRequest)|null $callback
+     *
+     * @throws LogicException when the SSR gateway cannot be configured
+     */
+    public function configureSsrRequestUsing(?Closure $callback = null): void
+    {
+        $gateway = service('inertiaSsrGateway');
+
+        if (! $gateway instanceof ConfiguresSsrRequests) {
+            throw new LogicException('The configured SSR gateway does not support configuring server-side rendering requests.');
+        }
+
+        $gateway->configureRequestUsing($callback);
     }
 
     /**

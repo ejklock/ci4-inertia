@@ -12,6 +12,7 @@ use CodeIgniter\HTTP\RequestInterface;
 use CodeIgniter\HTTP\ResponseInterface;
 use Ejklock\Ci4Inertia\AlwaysProp;
 use Ejklock\Ci4Inertia\ResponseFactory;
+use Ejklock\Ci4Inertia\Ssr\ExcludesSsrPaths;
 use Ejklock\Ci4Inertia\Support\Header;
 use Ejklock\Ci4Inertia\Support\SessionKey;
 
@@ -43,6 +44,14 @@ class InertiaFilter implements FilterInterface
     protected bool $withAllErrors = false;
 
     /**
+     * Paths excluded from server-side rendering on every request this filter handles, as
+     * patterns where `*` matches any characters. An application sets it by extending this filter.
+     *
+     * @var list<string>
+     */
+    protected array $withoutSsr = [];
+
+    /**
      * Installs `version()` as the lazy asset version resolver, shares every entry of
      * `share()` as a prop, then answers a stale-version `GET` with the `409` reload
      * response before the controller runs.
@@ -57,6 +66,7 @@ class InertiaFilter implements FilterInterface
 
         $resolveVersion = $this->installVersionResolver($request, $inertia);
         $this->shareProps($request, $inertia);
+        $this->excludeSsrPaths();
 
         if (! $this->isVersionCheckEligible($request)) {
             return null;
@@ -112,6 +122,23 @@ class InertiaFilter implements FilterInterface
     {
         foreach ($this->share($request) as $key => $prop) {
             $inertia->share($key, $prop);
+        }
+    }
+
+    /**
+     * Excludes `$withoutSsr` from server-side rendering when it lists paths and the SSR gateway
+     * can exclude paths; any other gateway is left as it is.
+     */
+    private function excludeSsrPaths(): void
+    {
+        if ($this->withoutSsr === []) {
+            return;
+        }
+
+        $gateway = service('inertiaSsrGateway');
+
+        if ($gateway instanceof ExcludesSsrPaths) {
+            $gateway->except($this->withoutSsr);
         }
     }
 

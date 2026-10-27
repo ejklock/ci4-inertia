@@ -7,11 +7,14 @@ namespace Ejklock\Ci4Inertia\Tests;
 use ArrayObject;
 use BackedEnum;
 use CodeIgniter\Config\BaseService;
+use CodeIgniter\HTTP\CURLRequest;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\ResponseInterface;
 use CodeIgniter\HTTP\SiteURI;
+use CodeIgniter\HTTP\URI;
 use CodeIgniter\HTTP\UserAgent;
 use CodeIgniter\Test\CIUnitTestCase;
+use CodeIgniter\Test\Mock\MockCURLRequest;
 use Config\App as AppConfig;
 use Config\Services;
 use Ejklock\Ci4Inertia\ComponentNotFoundException;
@@ -20,8 +23,13 @@ use Ejklock\Ci4Inertia\ProvidesInertiaProperties;
 use Ejklock\Ci4Inertia\RenderContext;
 use Ejklock\Ci4Inertia\ResponseFactory;
 use Ejklock\Ci4Inertia\ScrollMetadata;
+use Ejklock\Ci4Inertia\Ssr\BundleDetector;
+use Ejklock\Ci4Inertia\Ssr\Gateway;
+use Ejklock\Ci4Inertia\Ssr\HttpGateway;
+use Ejklock\Ci4Inertia\Ssr\Response;
 use Ejklock\Ci4Inertia\Support\SessionKey;
 use InvalidArgumentException;
+use LogicException;
 use PHPUnit\Framework\Assert;
 use ReflectionClass;
 use RuntimeException;
@@ -52,6 +60,8 @@ final class ResponseFactoryTest extends CIUnitTestCase
      * @var array<array-key, mixed>
      */
     private array $sessionGlobalBefore = [];
+
+    private int $ssrRequests = 0;
 
     /**
      * @param array<string, string> $headers
@@ -568,6 +578,7 @@ final class ResponseFactoryTest extends CIUnitTestCase
         [$inertia->ensurePagesExist, $inertia->pagePaths, $inertia->pageExtensions] = $this->originalPageConfig;
 
         Services::resetSingle('session');
+        BaseService::resetSingle('inertiaSsrGateway');
         service('superglobals')->setGlobalArray('cookie', []);
 
         if ($this->sessionGlobalExisted) {
@@ -1434,6 +1445,111 @@ final class ResponseFactoryTest extends CIUnitTestCase
         ]);
 
         return json_decode((string) $factory->render('C', $props)->toResponse($request, $this->makeResponse())->getBody(), true, flags: JSON_THROW_ON_ERROR);
+    }
+
+    private function injectSsrGateway(): HttpGateway
+    {
+        $config                        = new InertiaConfig();
+        $config->ssrEnabled            = true;
+        $config->ssrEnsureBundleExists = false;
+        $config->ssrHotFile            = '/nonexistent/hot';
+
+        $gateway = new HttpGateway(
+            $config,
+            function (array $options): CURLRequest {
+                $this->ssrRequests++;
+
+                return (new MockCURLRequest(config(AppConfig::class), new URI(), service('response', null, false), $options))
+                    ->setOutput("HTTP/1.1 200 OK\r\n\r\n{}");
+            },
+            new BundleDetector($config),
+        );
+        BaseService::injectMock('inertiaSsrGateway', $gateway);
+
+        return $gateway;
+    }
+
+    private function dispatchSsr(HttpGateway $gateway, string $route): void
+    {
+        $config            = new AppConfig();
+        $config->indexPage = '';
+        $gateway->dispatch(['component' => 'C'], new IncomingRequest($config, new SiteURI($config, $route), null, new UserAgent()));
+    }
+
+    private function injectPlainGateway(): void
+    {
+        BaseService::injectMock('inertiaSsrGateway', new class () implements Gateway {
+            public function dispatch(array $page): ?Response
+            {
+                return null;
+            }
+        });
+    }
+
+    public function testDisableSsrWithoutAnArgumentDisablesSsr(): void
+    {
+        $gateway = $this->injectSsrGateway();
+
+        $this->newFactory()->disableSsr();
+
+        $this->dispatchSsr($gateway, 'users');
+        $this->assertSame(0, $this->ssrRequests);
+    }
+
+    public function testDisableSsrWithAFalseConditionKeepsSsrOn(): void
+    {
+        $gateway = $this->injectSsrGateway();
+
+        $this->newFactory()->disableSsr(false);
+
+        $this->dispatchSsr($gateway, 'users');
+        $this->assertSame(1, $this->ssrRequests);
+    }
+
+    public function testWithoutSsrExcludesPathsFromTheSharedGateway(): void
+    {
+        $gateway = $this->injectSsrGateway();
+
+        $this->newFactory()->withoutSsr('admin/*');
+
+        $this->dispatchSsr($gateway, 'admin/x');
+        $this->assertSame(0, $this->ssrRequests);
+        $this->dispatchSsr($gateway, 'users');
+        $this->assertSame(1, $this->ssrRequests);
+    }
+
+    public function testConfigureSsrRequestUsingReachesTheSharedGateway(): void
+    {
+        $gateway = $this->injectSsrGateway();
+        /** @var ArrayObject<int, int> $calls */
+        $calls = new ArrayObject();
+
+        $this->newFactory()->configureSsrRequestUsing(static function () use ($calls): ?CURLRequest {
+            $calls->append(1);
+
+            return null;
+        });
+
+        $this->dispatchSsr($gateway, 'users');
+        $this->assertCount(1, $calls);
+    }
+
+    public function testTheSsrControlsRefuseAGatewayThatSupportsNone(): void
+    {
+        $this->injectPlainGateway();
+
+        foreach ([
+            [fn () => $this->newFactory()->disableSsr(), 'The configured SSR gateway does not support disabling server-side rendering conditionally.'],
+            [fn () => $this->newFactory()->withoutSsr('a'), 'The configured SSR gateway does not support excluding paths from server-side rendering.'],
+            [fn () => $this->newFactory()->configureSsrRequestUsing(), 'The configured SSR gateway does not support configuring server-side rendering requests.'],
+        ] as [$call, $message]) {
+            try {
+                $call();
+                $this->fail('Expected a LogicException.');
+            } catch (LogicException $e) {
+                $this->assertSame($message, $e->getMessage());
+            }
+        }
     }
 }
 

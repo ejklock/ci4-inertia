@@ -6,14 +6,25 @@ namespace Ejklock\Ci4Inertia\Tests;
 
 use Closure;
 use CodeIgniter\Config\BaseService;
+use CodeIgniter\HTTP\CURLRequest;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\ResponseInterface;
+use CodeIgniter\HTTP\SiteURI;
+use CodeIgniter\HTTP\URI;
+use CodeIgniter\HTTP\UserAgent;
 use CodeIgniter\Test\CIUnitTestCase;
 use CodeIgniter\Test\FeatureTestTrait;
+use CodeIgniter\Test\Mock\MockCURLRequest;
 use CodeIgniter\Test\TestResponse;
+use Config\App as AppConfig;
 use Ejklock\Ci4Inertia\AlwaysProp;
+use Ejklock\Ci4Inertia\Config\Inertia as InertiaConfig;
 use Ejklock\Ci4Inertia\Filters\InertiaFilter;
 use Ejklock\Ci4Inertia\ResponseFactory;
+use Ejklock\Ci4Inertia\Ssr\BundleDetector;
+use Ejklock\Ci4Inertia\Ssr\Gateway;
+use Ejklock\Ci4Inertia\Ssr\HttpGateway;
+use Ejklock\Ci4Inertia\Ssr\Response;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\Attributes\DataProvider;
 use stdClass;
@@ -51,6 +62,8 @@ final class InertiaFilterTest extends CIUnitTestCase
      * @var array<string, string>
      */
     private array $originalAliases;
+
+    private int $ssrRequests = 0;
 
     protected function setUp(): void
     {
@@ -95,6 +108,7 @@ final class InertiaFilterTest extends CIUnitTestCase
 
         $this->resetPerRequestServices();
         BaseService::resetSingle('session');
+        BaseService::resetSingle('inertiaSsrGateway');
 
         parent::tearDown();
     }
@@ -1501,5 +1515,82 @@ final class InertiaFilterTest extends CIUnitTestCase
         InertiaFilter::applyVaryHeader($response);
 
         $this->assertSame('X-Inertia', $response->getHeaderLine('Vary'));
+    }
+
+    private function injectSsrGateway(): HttpGateway
+    {
+        $config                        = new InertiaConfig();
+        $config->ssrEnabled            = true;
+        $config->ssrEnsureBundleExists = false;
+        $config->ssrHotFile            = '/nonexistent/hot';
+
+        $gateway = new HttpGateway(
+            $config,
+            function (array $options): CURLRequest {
+                $this->ssrRequests++;
+
+                return (new MockCURLRequest(config(AppConfig::class), new URI(), service('response', null, false), $options))
+                    ->setOutput("HTTP/1.1 200 OK\r\n\r\n{}");
+            },
+            new BundleDetector($config),
+        );
+        BaseService::injectMock('inertiaSsrGateway', $gateway);
+
+        return $gateway;
+    }
+
+    private function dispatchSsr(HttpGateway $gateway, string $route): void
+    {
+        $config            = new AppConfig();
+        $config->indexPage = '';
+        $gateway->dispatch(['component' => 'C'], new IncomingRequest($config, new SiteURI($config, $route), null, new UserAgent()));
+    }
+
+    private function runBefore(InertiaFilter $filter): void
+    {
+        $config            = new AppConfig();
+        $config->indexPage = '';
+        $filter->before(new IncomingRequest($config, new SiteURI($config, 'page'), null, new UserAgent()));
+    }
+
+    public function testAnExtendingFilterExcludesItsPathsFromSsr(): void
+    {
+        $gateway = $this->injectSsrGateway();
+
+        $this->runBefore(new class () extends InertiaFilter {
+            protected array $withoutSsr = ['admin/*'];
+        });
+
+        $this->dispatchSsr($gateway, 'admin/x');
+        $this->assertSame(0, $this->ssrRequests);
+        $this->dispatchSsr($gateway, 'users');
+        $this->assertSame(1, $this->ssrRequests);
+    }
+
+    public function testAFilterWithoutPathsLeavesTheGatewayUntouched(): void
+    {
+        $gateway = $this->injectSsrGateway();
+
+        $this->runBefore(new InertiaFilter());
+
+        $this->dispatchSsr($gateway, 'admin/x');
+        $this->assertSame(1, $this->ssrRequests);
+    }
+
+    public function testAFilterWithPathsLeavesAGatewayThatCannotExcludeThemAlone(): void
+    {
+        $gateway = new class () implements Gateway {
+            public function dispatch(array $page): ?Response
+            {
+                return null;
+            }
+        };
+        BaseService::injectMock('inertiaSsrGateway', $gateway);
+
+        $this->runBefore(new class () extends InertiaFilter {
+            protected array $withoutSsr = ['admin/*'];
+        });
+
+        $this->assertSame($gateway, service('inertiaSsrGateway'));
     }
 }
