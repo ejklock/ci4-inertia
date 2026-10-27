@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Ejklock\Ci4Inertia\Tests;
 
 use ArrayObject;
+use BackedEnum;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\ResponseInterface;
 use CodeIgniter\HTTP\SiteURI;
@@ -16,8 +17,11 @@ use Ejklock\Ci4Inertia\Config\Inertia as InertiaConfig;
 use Ejklock\Ci4Inertia\ProvidesInertiaProperties;
 use Ejklock\Ci4Inertia\RenderContext;
 use Ejklock\Ci4Inertia\ResponseFactory;
+use InvalidArgumentException;
 use PHPUnit\Framework\Assert;
+use RuntimeException;
 use stdClass;
+use UnitEnum;
 
 /**
  * Verifies `Ejklock\Ci4Inertia\ResponseFactory` against the public API in
@@ -65,7 +69,7 @@ final class ResponseFactoryTest extends CIUnitTestCase
     /**
      * @return array<string, mixed>
      */
-    private function renderPageObject(ResponseFactory $factory, string $component, array $props = []): array
+    private function renderPageObject(ResponseFactory $factory, BackedEnum|string|UnitEnum $component, array $props = []): array
     {
         $response = $factory->render($component, $props)->toResponse(
             $this->makeRequest('users', ['X-Inertia' => 'true']),
@@ -649,4 +653,280 @@ final class ResponseFactoryTest extends CIUnitTestCase
 
         $this->assertSame('Users/Index', $page['component']);
     }
+
+    public function testGetSharedReturnsEverythingSharedWhenNoKeyIsGiven(): void
+    {
+        $factory = $this->newFactory();
+        $factory->share(['auth' => ['user' => 'Ada']]);
+
+        $this->assertSame(['auth' => ['user' => 'Ada']], $factory->getShared());
+        $this->assertSame(['auth' => ['user' => 'Ada']], $factory->getShared(''));
+    }
+
+    public function testGetSharedReadsADotPathAndFallsBackToTheDefault(): void
+    {
+        $factory = $this->newFactory();
+        $factory->share(['auth' => ['user' => 'Ada']]);
+
+        $this->assertSame('Ada', $factory->getShared('auth.user'));
+        $this->assertSame('x', $factory->getShared('missing', 'x'));
+        $this->assertNull($factory->getShared('missing'));
+        $this->assertSame('x', $factory->getShared('auth.user.name', 'x'));
+        $this->assertSame('x', $factory->getShared('auth.nobody', 'x'));
+    }
+
+    public function testGetSharedPrefersALiteralKeyContainingADot(): void
+    {
+        $factory = $this->newFactory();
+        $factory->share(['a.b' => 1]);
+
+        $this->assertSame(1, $factory->getShared('a.b'));
+    }
+
+    public function testGetSharedReturnsASharedNullInsteadOfTheDefault(): void
+    {
+        $factory = $this->newFactory();
+        $factory->share('nothing');
+        $factory->share('group', ['inner' => null]);
+
+        $this->assertNull($factory->getShared('nothing', 'x'));
+        $this->assertNull($factory->getShared('group.inner', 'x'));
+    }
+
+    public function testGetSharedCallsAClosureDefaultOnlyForAMissingKey(): void
+    {
+        $calls   = new ArrayObject();
+        $default = static function () use ($calls): string {
+            $calls->append('called');
+
+            return 'x';
+        };
+        $factory = $this->newFactory();
+        $factory->share(['a' => 1]);
+
+        $this->assertSame(1, $factory->getShared('a', $default));
+        $this->assertCount(0, $calls);
+        $this->assertSame('x', $factory->getShared('missing', $default));
+        $this->assertSame('x', $factory->getShared('a.b.c', $default));
+        $this->assertCount(2, $calls);
+    }
+
+    public function testGetSharedReturnsANonClosureCallableDefaultAsIs(): void
+    {
+        $factory = $this->newFactory();
+
+        $this->assertSame('strtoupper', $factory->getShared('missing', 'strtoupper'));
+    }
+
+    public function testGetSharedWalksADotPathThroughAnArrayAccessObject(): void
+    {
+        $factory = $this->newFactory();
+        $factory->share(['bag' => new ArrayObject(['k' => 'v', 'n' => null])]);
+
+        $this->assertSame('v', $factory->getShared('bag.k'));
+        $this->assertNull($factory->getShared('bag.n', 'x'));
+        $this->assertSame('x', $factory->getShared('bag.missing', 'x'));
+    }
+
+    public function testFlushSharedDropsEverySharedPropFromLaterRenders(): void
+    {
+        $factory = $this->newFactory();
+        $factory->share(['a' => 1]);
+        $factory->flushShared();
+
+        $page = $this->renderPageObject($factory, 'Users/Index');
+
+        $this->assertSame([], $factory->getShared());
+        $this->assertSame([], $page['props']);
+        $this->assertArrayNotHasKey('sharedProps', $page);
+    }
+
+    public function testGetVersionResolvesOnceAcrossLaterRenders(): void
+    {
+        $invocations = 0;
+        $factory     = new ResponseFactory($this->makeRequest('users'), 'app', static function () use (&$invocations): string {
+            $invocations++;
+
+            return 'v9';
+        });
+
+        $this->assertSame('v9', $factory->getVersion());
+        $this->assertSame('v9', $this->renderPageObject($factory, 'C')['version']);
+        $this->assertSame(1, $invocations);
+    }
+
+    public function testVersionAfterGetVersionReplacesTheValue(): void
+    {
+        $factory = $this->newFactory();
+
+        $this->assertSame('v1', $factory->getVersion());
+
+        $factory->version('v2');
+
+        $this->assertSame('v2', $factory->getVersion());
+    }
+
+    public function testOptionalBuildsAPropSentOnlyOnAPartialReloadNamingIt(): void
+    {
+        $factory = $this->newFactory();
+        $prop    = $factory->optional(static fn (): int => 1);
+
+        $this->assertArrayNotHasKey('lazy', $this->renderPageObject($factory, 'C', ['lazy' => $prop]));
+
+        $page = $this->renderPartial($factory, ['lazy' => $prop], 'lazy');
+
+        $this->assertSame(['lazy' => 1], $page['props']);
+    }
+
+    public function testAlwaysBuildsAPropSentOnAPartialReloadNamingAnotherKey(): void
+    {
+        $factory = $this->newFactory();
+        $prop    = $factory->always('x');
+
+        $page = $this->renderPartial($factory, ['keep' => $prop, 'other' => 2], 'other');
+
+        $this->assertSame(['keep' => 'x', 'other' => 2], $page['props']);
+    }
+
+    public function testRenderAcceptsAStringBackedEnumAsTheComponent(): void
+    {
+        $this->assertSame('Users/Index', $this->renderPageObject($this->newFactory(), TestPage::Users)['component']);
+    }
+
+    public function testRenderUsesTheNameOfAPureEnumAsTheComponent(): void
+    {
+        $this->assertSame('Dashboard', $this->renderPageObject($this->newFactory(), TestPureEnum::Dashboard)['component']);
+    }
+
+    public function testRenderRejectsAnIntBackedEnumComponent(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Component argument must be of type string or a string BackedEnum');
+
+        $this->newFactory()->render(TestIntEnum::One);
+    }
+
+    public function testTransformComponentUsingRewritesTheComponentName(): void
+    {
+        $factory = $this->newFactory();
+        $factory->transformComponentUsing(static fn ($component): string => 'Pages/' . $component);
+
+        $this->assertSame('Pages/Users', $this->renderPageObject($factory, 'Users')['component']);
+    }
+
+    public function testATransformerReturningNullKeepsTheOriginalComponent(): void
+    {
+        $factory = $this->newFactory();
+        $factory->transformComponentUsing(static fn ($component): ?string => null);
+
+        $this->assertSame('Users', $this->renderPageObject($factory, 'Users')['component']);
+    }
+
+    public function testClearingTheTransformerStopsTransforming(): void
+    {
+        $factory = $this->newFactory();
+        $factory->transformComponentUsing(static fn ($component): string => 'Pages/' . $component);
+        $factory->transformComponentUsing();
+
+        $this->assertSame('Users', $this->renderPageObject($factory, 'Users')['component']);
+    }
+
+    public function testTheTransformerRunsBeforeTheEnumMapping(): void
+    {
+        $factory = $this->newFactory();
+        $factory->transformComponentUsing(static fn ($component): string => $component instanceof TestPage ? 'Custom/' . $component->name : 'wrong');
+
+        $this->assertSame('Custom/Users', $this->renderPageObject($factory, TestPage::Users)['component']);
+    }
+
+    public function testSetRootViewChangesTheViewOfLaterRendersOnly(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest('users'), 'missing-before', static fn (): string => 'v1');
+        $before  = $factory->render('C');
+
+        $factory->setRootView('Ejklock\Ci4InertiaTestSupport\Views\shell');
+        $after = $factory->render('C');
+
+        $html = (string) $after->toResponse($this->makeRequest('users'), $this->makeResponse())->getBody();
+
+        $this->assertStringContainsString('Inertia test shell', $html);
+
+        $this->expectException(RuntimeException::class);
+        $before->toResponse($this->makeRequest('users'), $this->makeResponse());
+    }
+
+    public function testResolveUrlUsingSetsThePageUrlAndReceivesTheRequest(): void
+    {
+        $factory  = $this->newFactory();
+        $received = null;
+        $factory->resolveUrlUsing(static function (IncomingRequest $request) use (&$received): string {
+            $received = $request;
+
+            return '/custom';
+        });
+        $request = $this->makeRequest('users', ['X-Inertia' => 'true']);
+
+        $page = json_decode((string) $factory->render('C')->toResponse($request, $this->makeResponse())->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame('/custom', $page['url']);
+        $this->assertSame($request, $received);
+    }
+
+    public function testResolveUrlUsingNullRestoresTheDefaultUrl(): void
+    {
+        $factory = $this->newFactory();
+        $factory->resolveUrlUsing(static fn (IncomingRequest $request): string => '/custom');
+        $factory->resolveUrlUsing();
+
+        $this->assertSame('/users', $this->renderPageObject($factory, 'C')['url']);
+    }
+
+    public function testLocationGivenARedirectAnswers409WithItsTargetOnAnInertiaRequest(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest('users', ['X-Inertia' => 'true']), 'app', static fn (): string => 'v1');
+
+        $response = $factory->location(redirect()->to('/y'));
+
+        $this->assertSame(409, $response->getStatusCode());
+        $this->assertSame((string) new SiteURI(config(AppConfig::class), '/y'), $response->getHeaderLine('X-Inertia-Location'));
+    }
+
+    public function testLocationGivenARedirectReturnsThatRedirectOtherwise(): void
+    {
+        $factory  = $this->newFactory();
+        $redirect = redirect()->to('/y');
+
+        $this->assertSame($redirect, $factory->location($redirect));
+    }
+
+    /**
+     * @param array<string, mixed> $props
+     *
+     * @return array<string, mixed>
+     */
+    private function renderPartial(ResponseFactory $factory, array $props, string $only): array
+    {
+        $request = $this->makeRequest('users', [
+            'X-Inertia'                   => 'true',
+            'X-Inertia-Partial-Component' => 'C',
+            'X-Inertia-Partial-Data'      => $only,
+        ]);
+
+        return json_decode((string) $factory->render('C', $props)->toResponse($request, $this->makeResponse())->getBody(), true, flags: JSON_THROW_ON_ERROR);
+    }
+}
+
+enum TestPage: string
+{
+    case Users = 'Users/Index';
+}
+
+enum TestPureEnum
+{
+    case Dashboard;
+}
+
+enum TestIntEnum: int
+{
+    case One = 1;
 }

@@ -9,12 +9,16 @@ use CodeIgniter\HTTP\ResponseInterface;
 use CodeIgniter\HTTP\SiteURI;
 use CodeIgniter\HTTP\UserAgent;
 use CodeIgniter\Test\CIUnitTestCase;
+use CodeIgniter\View\View;
 use Config\App as AppConfig;
+use Config\Services;
 use Ejklock\Ci4Inertia\AlwaysProp;
 use Ejklock\Ci4Inertia\DeferProp;
 use Ejklock\Ci4Inertia\InertiaResponse;
 use Ejklock\Ci4Inertia\MergeProp;
 use Ejklock\Ci4Inertia\OptionalProp;
+use Ejklock\Ci4Inertia\ProvidesInertiaProperties;
+use Ejklock\Ci4Inertia\RenderContext;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
 
@@ -954,5 +958,118 @@ final class InertiaResponseTest extends CIUnitTestCase
 
         $this->assertTrue($page['encryptHistory']);
         $this->assertTrue($page['clearHistory']);
+    }
+
+    public function testRootViewOverridesTheViewTheHtmlComesFrom(): void
+    {
+        $inertia = new InertiaResponse('C', [], 'v1', 'missing-view');
+
+        $this->assertSame($inertia, $inertia->rootView(self::SHELL_VIEW));
+
+        $html = (string) $inertia->toResponse($this->makeRequest('users'), $this->makeResponse())->getBody();
+
+        $this->assertStringContainsString('Inertia test shell', $html);
+    }
+
+    public function testAUrlResolverSetsThePageUrlInJsonAndHtml(): void
+    {
+        $resolver = static fn (IncomingRequest $request): string => '/custom';
+        $inertia  = new InertiaResponse('C', [], 'v1', self::SHELL_VIEW, urlResolver: $resolver);
+
+        $this->assertSame('/custom', $this->pageOf($inertia)['url']);
+
+        $html = (string) $inertia->toResponse($this->makeRequest('users'), $this->makeResponse())->getBody();
+
+        $this->assertSame('/custom', $this->decodePageScript($html)['url']);
+    }
+
+    public function testWithAddsASinglePropAndReturnsTheSameInstance(): void
+    {
+        $inertia = new InertiaResponse('C', [], 'v1', self::SHELL_VIEW);
+
+        $this->assertSame($inertia, $inertia->with('a', 1));
+        $this->assertSame(['a' => 1], $this->pageOf($inertia)['props']);
+    }
+
+    public function testWithAMapMergesAndALaterKeyWinsOverARenderProp(): void
+    {
+        $inertia = new InertiaResponse('C', ['a' => 0, 'keep' => true], 'v1', self::SHELL_VIEW);
+
+        $this->assertSame($inertia, $inertia->with(['a' => 1, 'b' => 2]));
+        $this->assertSame(['a' => 1, 'keep' => true, 'b' => 2], $this->pageOf($inertia)['props']);
+    }
+
+    public function testWithAPropertiesProviderExpandsItsProps(): void
+    {
+        $inertia  = new InertiaResponse('C', [], 'v1', self::SHELL_VIEW);
+        $provider = new class () implements ProvidesInertiaProperties {
+            public function toInertiaProperties(RenderContext $context): iterable
+            {
+                return ['fromProvider' => 'yes'];
+            }
+        };
+
+        $this->assertSame($inertia, $inertia->with($provider));
+        $this->assertSame(['fromProvider' => 'yes'], $this->pageOf($inertia)['props']);
+    }
+
+    public function testWithViewDataReachesTheRootViewAndNeverThePage(): void
+    {
+        $inertia = new InertiaResponse('C', [], 'v1', 'data_shell');
+
+        $this->assertSame($inertia, $inertia->withViewData('title', 'T'));
+        $this->assertSame($inertia, $inertia->withViewData(['meta' => 'm']));
+
+        $html = $this->renderWithDataShell($inertia);
+
+        $this->assertStringContainsString('<title>T</title><meta name="m">', $html);
+        $this->assertArrayNotHasKey('title', $this->decodePageScript($html));
+        $this->assertArrayNotHasKey('title', $this->pageOf($inertia));
+    }
+
+    public function testViewDataNamedPageNeverReplacesThePageObject(): void
+    {
+        $inertia = (new InertiaResponse('C', [], 'v1', 'data_shell'))->withViewData('page', ['component' => 'Hijacked']);
+
+        $html = $this->renderWithDataShell($inertia);
+
+        $this->assertSame('C', $this->decodePageScript($html)['component']);
+    }
+
+    public function testFluentCallsChainInAnyOrder(): void
+    {
+        $inertia = (new InertiaResponse('C', [], 'v1', 'missing-view'))
+            ->withViewData('title', 'T')
+            ->with('a', 1)
+            ->rootView('data_shell')
+            ->with(['b' => 2]);
+
+        $html = $this->renderWithDataShell($inertia);
+
+        $this->assertSame(['a' => 1, 'b' => 2], $this->decodePageScript($html)['props']);
+        $this->assertStringContainsString('<title>T</title>', $html);
+    }
+
+    /**
+     * Renders through a real view renderer rooted in a scratch directory holding a root view
+     * that prints the `title` and `meta` view data next to the page script.
+     */
+    private function renderWithDataShell(InertiaResponse $inertia): string
+    {
+        $directory = sys_get_temp_dir() . '/ci4-inertia-views-' . bin2hex(random_bytes(4)) . '/';
+        mkdir($directory);
+        file_put_contents(
+            $directory . 'data_shell.php',
+            '<title><?= esc($title ?? "") ?></title><meta name="<?= esc($meta ?? "") ?>"><?= inertia_app($page) ?>',
+        );
+        Services::injectMock('renderer', new View(config('View'), $directory));
+
+        try {
+            return (string) $inertia->toResponse($this->makeRequest('users'), $this->makeResponse())->getBody();
+        } finally {
+            Services::reset(true);
+            unlink($directory . 'data_shell.php');
+            rmdir($directory);
+        }
     }
 }

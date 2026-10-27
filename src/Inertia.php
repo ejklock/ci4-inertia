@@ -4,9 +4,14 @@ declare(strict_types=1);
 
 namespace Ejklock\Ci4Inertia;
 
+use BackedEnum;
+use Closure;
+use CodeIgniter\HTTP\IncomingRequest;
+use CodeIgniter\HTTP\RedirectResponse;
 use CodeIgniter\HTTP\ResponseInterface;
 use Ejklock\Ci4Inertia\Config\Services;
 use InvalidArgumentException;
+use UnitEnum;
 
 /**
  * A static shortcut for `service('inertia')`: every method forwards to the shared
@@ -26,9 +31,12 @@ final class Inertia
      *                                                                 `ProvidesInertiaProperties`
      *                                                                 stands for a list of that one.
      *
+     * @throws InvalidArgumentException When the component is not a string once the transformer and
+     *                                  the enum mapping have run, such as an int-backed enum.
+     *
      * @see ResponseFactory::render()
      */
-    public static function render(string $component, array|ProvidesInertiaProperties $props = []): InertiaResponse
+    public static function render(BackedEnum|string|UnitEnum $component, array|ProvidesInertiaProperties $props = []): InertiaResponse
     {
         return self::factory()->render($component, $props);
     }
@@ -113,9 +121,75 @@ final class Inertia
     }
 
     /**
+     * @see ResponseFactory::getVersion()
+     */
+    public static function getVersion(): string
+    {
+        return self::factory()->getVersion();
+    }
+
+    /**
+     * @see ResponseFactory::getShared()
+     */
+    public static function getShared(?string $key = null, mixed $default = null): mixed
+    {
+        return self::factory()->getShared($key, $default);
+    }
+
+    /**
+     * @see ResponseFactory::flushShared()
+     */
+    public static function flushShared(): void
+    {
+        self::factory()->flushShared();
+    }
+
+    /**
+     * @see ResponseFactory::setRootView()
+     */
+    public static function setRootView(string $rootView): void
+    {
+        self::factory()->setRootView($rootView);
+    }
+
+    /**
+     * @param (Closure(IncomingRequest): string)|null $urlResolver
+     *
+     * @see ResponseFactory::resolveUrlUsing()
+     */
+    public static function resolveUrlUsing(?Closure $urlResolver = null): void
+    {
+        self::factory()->resolveUrlUsing($urlResolver);
+    }
+
+    /**
+     * @see ResponseFactory::transformComponentUsing()
+     */
+    public static function transformComponentUsing(?Closure $componentTransformer = null): void
+    {
+        self::factory()->transformComponentUsing($componentTransformer);
+    }
+
+    /**
+     * @see ResponseFactory::optional()
+     */
+    public static function optional(callable $callback): OptionalProp
+    {
+        return self::factory()->optional($callback);
+    }
+
+    /**
+     * @see ResponseFactory::always()
+     */
+    public static function always(mixed $value): AlwaysProp
+    {
+        return self::factory()->always($value);
+    }
+
+    /**
      * @see ResponseFactory::location()
      */
-    public static function location(string $url): ResponseInterface
+    public static function location(RedirectResponse|string $url): ResponseInterface
     {
         return self::factory()->location($url);
     }

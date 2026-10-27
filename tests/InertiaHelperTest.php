@@ -4,7 +4,12 @@ declare(strict_types=1);
 
 namespace Ejklock\Ci4Inertia\Tests;
 
+use CodeIgniter\HTTP\IncomingRequest;
+use CodeIgniter\HTTP\SiteURI;
+use CodeIgniter\HTTP\UserAgent;
 use CodeIgniter\Test\CIUnitTestCase;
+use Config\App as AppConfig;
+use Config\Services;
 use JsonException;
 use stdClass;
 
@@ -112,5 +117,98 @@ final class InertiaHelperTest extends CIUnitTestCase
         $this->expectException(JsonException::class);
 
         inertia_app($this->page(['bad' => "\xB1\x31"]));
+    }
+
+    public function testInertiaWithoutArgumentsReturnsTheSharedFactory(): void
+    {
+        $this->assertSame(service('inertia'), inertia());
+    }
+
+    public function testInertiaWithAComponentRendersIt(): void
+    {
+        $response = inertia('Users/Index', ['a' => 1]);
+
+        $request = $this->makeRequest(['X-Inertia' => 'true']);
+        $page    = json_decode((string) $response->toResponse($request, service('response', null, false))->getBody(), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame('Users/Index', $page['component']);
+        $this->assertSame(['a' => 1], $page['props']);
+    }
+
+    public function testInertiaWithAnEmptyComponentReturnsTheFactory(): void
+    {
+        $this->assertSame(service('inertia'), inertia(''));
+    }
+
+    public function testInertiaWithAZeroStringComponentReturnsTheFactory(): void
+    {
+        $this->assertSame(service('inertia'), inertia('0'));
+    }
+
+    public function testInertiaLocationAnswers409OnAnInertiaRequest(): void
+    {
+        $this->useRequest(['X-Inertia' => 'true']);
+
+        $response = inertia_location('/x');
+
+        $this->assertSame(409, $response->getStatusCode());
+        $this->assertSame('/x', $response->getHeaderLine('X-Inertia-Location'));
+    }
+
+    public function testInertiaLocationRedirectsOtherwise(): void
+    {
+        $this->useRequest();
+
+        $response = inertia_location('/x');
+
+        $this->assertStringEndsWith('/x', $response->getHeaderLine('Location'));
+        $this->assertFalse($response->hasHeader('X-Inertia-Location'));
+    }
+
+    public function testInertiaLocationAcceptsARedirectResponse(): void
+    {
+        $this->useRequest(['X-Inertia' => 'true']);
+
+        $response = inertia_location(redirect()->to('/y'));
+
+        $this->assertSame(409, $response->getStatusCode());
+        $this->assertStringEndsWith('/y', $response->getHeaderLine('X-Inertia-Location'));
+    }
+
+    public function testBothHelpersAreDefinedByLoadingTheHelper(): void
+    {
+        $this->assertTrue(function_exists('inertia'));
+        $this->assertTrue(function_exists('inertia_location'));
+    }
+
+    /**
+     * @param array<string, string> $headers
+     */
+    private function makeRequest(array $headers = []): IncomingRequest
+    {
+        $config  = config(AppConfig::class);
+        $request = new IncomingRequest($config, new SiteURI($config, 'users'), null, new UserAgent());
+
+        foreach ($headers as $name => $value) {
+            $request->setHeader($name, $value);
+        }
+
+        return $request;
+    }
+
+    /**
+     * @param array<string, string> $headers
+     */
+    private function useRequest(array $headers = []): void
+    {
+        Services::injectMock('request', $this->makeRequest($headers));
+        Services::resetSingle('inertia');
+    }
+
+    protected function tearDown(): void
+    {
+        Services::reset(true);
+
+        parent::tearDown();
     }
 }

@@ -94,6 +94,66 @@ final class InertiaTest extends CIUnitTestCase
         $this->assertSame(['auth', 'locale'], $page['sharedProps']);
     }
 
+    public function testSharedPropsCanBeReadAndFlushedThroughTheFacade(): void
+    {
+        $this->injectFactory();
+
+        Inertia::share(['auth' => ['user' => 'Ada']]);
+
+        $this->assertSame('Ada', Inertia::getShared('auth.user'));
+        $this->assertSame('x', Inertia::getShared('missing', 'x'));
+
+        Inertia::flushShared();
+
+        $this->assertSame([], Inertia::getShared());
+    }
+
+    public function testGetVersionReturnsTheResolvedVersion(): void
+    {
+        $this->injectFactory(version: 'v7');
+
+        $this->assertSame('v7', Inertia::getVersion());
+    }
+
+    public function testOptionalIsLeftOutAndAlwaysIsSentOnAFullRender(): void
+    {
+        $this->injectFactory();
+
+        $page = $this->pageOf(Inertia::render('C', [
+            'lazy'   => Inertia::optional(static fn (): int => 1),
+            'sticky' => Inertia::always('x'),
+        ]));
+
+        $this->assertSame(['sticky' => 'x'], $page['props']);
+    }
+
+    public function testComponentTransformerRootViewAndUrlResolverApplyToLaterRenders(): void
+    {
+        $this->injectFactory();
+
+        Inertia::transformComponentUsing(static fn ($component): string => 'Pages/' . $component);
+        Inertia::resolveUrlUsing(static fn (IncomingRequest $request): string => '/custom');
+        Inertia::setRootView('Ejklock\Ci4InertiaTestSupport\Views\shell');
+
+        $response = Inertia::render('Users');
+        $page     = $this->pageOf($response);
+        $html     = (string) $response->toResponse($this->makeRequest(), service('response', null, false))->getBody();
+
+        $this->assertSame('Pages/Users', $page['component']);
+        $this->assertSame('/custom', $page['url']);
+        $this->assertStringContainsString('Inertia test shell', $html);
+    }
+
+    public function testLocationAcceptsARedirectResponse(): void
+    {
+        $this->injectFactory();
+
+        $response = Inertia::location(redirect()->to('/y'));
+
+        $this->assertSame(409, $response->getStatusCode());
+        $this->assertStringEndsWith('/y', $response->getHeaderLine('X-Inertia-Location'));
+    }
+
     public function testDeferReturnsADeferPropInTheGivenGroup(): void
     {
         $this->injectFactory();

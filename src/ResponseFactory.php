@@ -4,18 +4,25 @@ declare(strict_types=1);
 
 namespace Ejklock\Ci4Inertia;
 
+use ArrayAccess;
+use BackedEnum;
 use Closure;
 use CodeIgniter\HTTP\IncomingRequest;
+use CodeIgniter\HTTP\RedirectResponse;
 use CodeIgniter\HTTP\ResponseInterface;
 use Ejklock\Ci4Inertia\Support\Header;
 use InvalidArgumentException;
+use UnitEnum;
 
 /**
  * The public entry point a controller invokes to build an Inertia response: `render()`
  * for a page, `defer()` for a prop the client loads afterwards, `merge()` and `deepMerge()` for a
- * prop the client combines with its current value, `share()` for props carried across every render on this instance, `version()`
- * to override how the asset version is resolved, and `location()` to answer a stale-asset
- * reload. A prop value is a scalar, an array, `null`, a closure or invokable object called only
+ * prop the client combines with its current value, `optional()` and `always()` for props a partial
+ * reload decides on, `share()`, `getShared()` and `flushShared()` for props carried across every
+ * render on this instance, `version()` and `getVersion()` to override and read how the asset
+ * version is resolved, `setRootView()`, `resolveUrlUsing()` and `transformComponentUsing()` to
+ * change the root view, the page URL and the component name of the renders that follow, and
+ * `location()` to answer a stale-asset reload. A prop value is a scalar, an array, `null`, a closure or invokable object called only
  * when the prop is sent, a `JsonSerializable` object, or one of the prop classes; any other
  * object is encoded as JSON by the response.
  */
@@ -44,6 +51,13 @@ final class ResponseFactory
     private ?string $resolvedVersion = null;
 
     /**
+     * @var (Closure(IncomingRequest): string)|null
+     */
+    private ?Closure $urlResolver = null;
+
+    private ?Closure $componentTransformer = null;
+
+    /**
      * @param IncomingRequest   $request         The current request; read only by
      *                                           `location()` to tell an Inertia reload
      *                                           apart from a first visit.
@@ -59,7 +73,7 @@ final class ResponseFactory
      */
     public function __construct(
         private readonly IncomingRequest $request,
-        private readonly string $rootView,
+        private string $rootView,
         private Closure $versionResolver,
         private bool $encryptHistory = false,
     ) {
@@ -69,14 +83,23 @@ final class ResponseFactory
      * Builds the page response for one component: shared props merged with this
      * render's props, the latter winning on key collision.
      *
-     * @param array<array-key, mixed>|ProvidesInertiaProperties $props Per-render props; a closure
-     *                                                                 or invokable object is called
-     *                                                                 only when the prop is sent. A
-     *                                                                 `ProvidesInertiaProperties`
-     *                                                                 stands for a list of that one.
+     * @param BackedEnum|string|UnitEnum                        $component The component name: a string, a string-backed
+     *                                                                     enum read by its value, or a pure enum read by
+     *                                                                     its name. The component transformer, when set,
+     *                                                                     sees it first.
+     * @param array<array-key, mixed>|ProvidesInertiaProperties $props     Per-render props; a closure
+     *                                                                     or invokable object is called
+     *                                                                     only when the prop is sent. A
+     *                                                                     `ProvidesInertiaProperties`
+     *                                                                     stands for a list of that one.
+     *
+     * @throws InvalidArgumentException When the component is not a string once the transformer and
+     *                                  the enum mapping have run, such as an int-backed enum.
      */
-    public function render(string $component, array|ProvidesInertiaProperties $props = []): InertiaResponse
+    public function render(BackedEnum|string|UnitEnum $component, array|ProvidesInertiaProperties $props = []): InertiaResponse
     {
+        $component = $this->componentName($component);
+
         if ($props instanceof ProvidesInertiaProperties) {
             $props = [$props];
         }
@@ -84,12 +107,65 @@ final class ResponseFactory
         return new InertiaResponse(
             $component,
             $props,
-            $this->resolveVersion(),
+            $this->getVersion(),
             $this->rootView,
             $this->encryptHistory,
             $this->pullClearHistory(),
             $this->sharedProps,
+            $this->urlResolver,
         );
+    }
+
+    /**
+     * Sets the root view of the renders that follow; a render built earlier keeps the view it
+     * was built with.
+     */
+    public function setRootView(string $rootView): void
+    {
+        $this->rootView = $rootView;
+    }
+
+    /**
+     * Sets how the page object's `url` is computed for the renders that follow; `null`
+     * restores the request path and query string.
+     *
+     * @param (Closure(IncomingRequest): string)|null $urlResolver Receives the current request.
+     */
+    public function resolveUrlUsing(?Closure $urlResolver = null): void
+    {
+        $this->urlResolver = $urlResolver;
+    }
+
+    /**
+     * Sets a rewrite applied to the component of every render that follows, before the enum
+     * mapping; a `null` result keeps the original component, and `null` here stops transforming.
+     */
+    public function transformComponentUsing(?Closure $componentTransformer = null): void
+    {
+        $this->componentTransformer = $componentTransformer;
+    }
+
+    /**
+     * Marks a prop the first render leaves out and a partial reload sends only when it names
+     * the prop: pass the result as a prop value to `render()` or `share()`.
+     *
+     * @param callable $callback Produces the prop's value; invoked only when the prop is sent.
+     */
+    public function optional(callable $callback): OptionalProp
+    {
+        return new OptionalProp($callback);
+    }
+
+    /**
+     * Marks a prop every response carries, partial reloads that name other props included:
+     * pass the result as a prop value to `render()` or `share()`.
+     *
+     * @param mixed $value The value sent as-is, or a closure or invokable object called only
+     *                     when the prop is sent.
+     */
+    public function always(mixed $value): AlwaysProp
+    {
+        return new AlwaysProp($value);
     }
 
     /**
@@ -183,6 +259,31 @@ final class ResponseFactory
     }
 
     /**
+     * Reads the shared props.
+     *
+     * @param string|null $key     An exact shared key, or a dot path into nested arrays; an empty
+     *                             or missing key reads every shared prop.
+     * @param mixed       $default Returned when the key is not shared; a shared `null` is a value
+     *                             and wins over it. A closure is called and its result returned.
+     */
+    public function getShared(?string $key = null, mixed $default = null): mixed
+    {
+        if ($key === null || $key === '' || $key === '0') {
+            return $this->sharedProps;
+        }
+
+        return $this->sharedByPath($key, $default);
+    }
+
+    /**
+     * Drops every shared prop, so the renders that follow carry none.
+     */
+    public function flushShared(): void
+    {
+        $this->sharedProps = [];
+    }
+
+    /**
      * Sets the asset version used by every subsequent `render()`: a literal string, or a
      * resolver invoked at most once and memoized for the rest of this instance's
      * lifetime, however many renders follow.
@@ -197,20 +298,33 @@ final class ResponseFactory
     }
 
     /**
+     * Reads the asset version, invoking the version resolver at most once per instance until
+     * `version()` replaces it.
+     */
+    public function getVersion(): string
+    {
+        return $this->resolvedVersion ??= ($this->versionResolver)();
+    }
+
+    /**
      * Answers a stale-asset reload: a `409` carrying the fresh `X-Inertia-Location` when
      * the current request is an Inertia visit, or a plain redirect to `$url` otherwise.
      * `$url` is taken verbatim from the caller and never derived from request input
      * — the caller is responsible for passing a server-computed value.
+     *
+     * @param RedirectResponse|string $url A redirect stands for its target: an Inertia visit gets
+     *                                     the target in the `409`, any other request gets that
+     *                                     redirect itself.
      */
-    public function location(string $url): ResponseInterface
+    public function location(RedirectResponse|string $url): ResponseInterface
     {
         if ($this->request->hasHeader(Header::INERTIA)) {
             return response()
                 ->setStatusCode(409)
-                ->setHeader(Header::LOCATION, $url);
+                ->setHeader(Header::LOCATION, $url instanceof RedirectResponse ? $url->getHeaderLine('Location') : $url);
         }
 
-        return redirect()->to($url);
+        return $url instanceof RedirectResponse ? $url : redirect()->to($url);
     }
 
     /**
@@ -236,14 +350,56 @@ final class ResponseFactory
     }
 
     /**
-     * Resolves the asset version, invoking the version resolver at most once per
-     * instance and reusing the memoized result for every render that follows, until
-     * `version()` replaces the resolver and clears the memo.
+     * Applies the component transformer, then maps an enum to its value or name.
      *
-     * @return string The resolved asset version.
+     * @throws InvalidArgumentException When the result is not a string.
      */
-    private function resolveVersion(): string
+    private function componentName(BackedEnum|string|UnitEnum $component): string
     {
-        return $this->resolvedVersion ??= ($this->versionResolver)();
+        if ($this->componentTransformer !== null) {
+            $component = ($this->componentTransformer)($component) ?? $component;
+        }
+
+        $name = match (true) {
+            $component instanceof BackedEnum => $component->value,
+            $component instanceof UnitEnum   => $component->name,
+            default                          => $component,
+        };
+
+        if (! is_string($name)) {
+            throw new InvalidArgumentException('Component argument must be of type string or a string BackedEnum');
+        }
+
+        return $name;
+    }
+
+    /**
+     * Reads a shared prop by an exact key first, then by a dot path through nested arrays, the
+     * way Laravel's `Arr::get` does: nested `ArrayAccess` objects are walked like arrays, and a
+     * closure default is called, only when nothing is found, and its result returned.
+     */
+    private function sharedByPath(string $key, mixed $default): mixed
+    {
+        if (array_key_exists($key, $this->sharedProps)) {
+            return $this->sharedProps[$key];
+        }
+
+        $current = $this->sharedProps;
+
+        foreach (explode('.', $key) as $segment) {
+            $found = match (true) {
+                is_array($current)              => array_key_exists($segment, $current),
+                $current instanceof ArrayAccess => $current->offsetExists($segment),
+                default                         => false,
+            };
+
+            if (! $found) {
+                return $default instanceof Closure ? $default() : $default;
+            }
+
+            $current = $current[$segment];
+        }
+
+        return $current;
     }
 }
