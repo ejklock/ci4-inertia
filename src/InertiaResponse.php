@@ -214,14 +214,25 @@ final class InertiaResponse
     }
 
     /**
-     * Builds the page object's `url`, from the URL resolver when one is set; otherwise an absolute path with a guaranteed leading slash,
-     * plus the query string when present. Never includes scheme or host — the page
-     * object's `url` is relative by contract.
+     * Builds the page object's `url`, from the URL resolver when one is set; otherwise the
+     * server's raw request URI, which is what the browser asked for (subfolder, index page only
+     * when the client used it, trailing slash and query exactly as sent). The result always has
+     * exactly one leading slash (a leading run of slashes or backslashes collapses to one, so
+     * the url can never be protocol-relative) and never carries scheme or authority — the page
+     * object's `url` is relative by contract. Without a request URI (CLI, tests), the route path plus query is used.
      */
     private function currentUrl(IncomingRequest $request): string
     {
         if ($this->urlResolver !== null) {
             return ($this->urlResolver)($request);
+        }
+
+        $requestUri = $request->getServer('REQUEST_URI');
+
+        if (is_string($requestUri) && $requestUri !== '') {
+            $relative = preg_replace('#^[a-z][a-z0-9+.-]*://[^/?\\#]*#i', '', $requestUri) ?? $requestUri;
+
+            return preg_replace('#^[/\\\\]*#', '/', $relative) ?? $relative;
         }
 
         $path  = '/' . ltrim($request->getPath(), '/');

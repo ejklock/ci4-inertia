@@ -138,6 +138,125 @@ final class InertiaResponseTest extends CIUnitTestCase
         $this->assertSame('/users/index?status=open', $page['url']);
     }
 
+    /**
+     * Renders a page for a request whose server data carries the given raw request URI, restoring the server data afterwards.
+     */
+    private function renderWithRequestUri(string $requestUri, bool $inertia = true, ?InertiaResponse $page = null): string
+    {
+        $headers      = $inertia ? ['X-Inertia' => 'true'] : [];
+        $request      = $this->makeRequest('users', $headers);
+        $superglobals = service('superglobals');
+        $server       = $superglobals->getServerArray();
+        $request->setGlobal('server', ['REQUEST_URI' => $requestUri]);
+
+        try {
+            $page ??= new InertiaResponse('Users/Index', [], 'v1', self::SHELL_VIEW);
+
+            return (string) $page->toResponse($request, $this->makeResponse())->getBody();
+        } finally {
+            $superglobals->setServerArray($server);
+        }
+    }
+
+    private function pageUrlForRequestUri(string $requestUri): string
+    {
+        return json_decode($this->renderWithRequestUri($requestUri), true, flags: JSON_THROW_ON_ERROR)['url'];
+    }
+
+    #[DataProvider('providePageUrlIsTheRawRequestUriAsSeenFromTheHost')]
+    public function testPageUrlIsTheRawRequestUriAsSeenFromTheHost(string $requestUri, string $expected): void
+    {
+        $this->assertSame($expected, $this->pageUrlForRequestUri($requestUri));
+    }
+
+    /**
+     * @return iterable<string, array{string, string}>
+     */
+    public static function providePageUrlIsTheRawRequestUriAsSeenFromTheHost(): iterable
+    {
+        yield 'subfolder path' => ['/app/users', '/app/users'];
+
+        yield 'subfolder path with query' => ['/app/users?page=2', '/app/users?page=2'];
+
+        yield 'subfolder root' => ['/app/', '/app/'];
+
+        yield 'root' => ['/', '/'];
+
+        yield 'rewritten request stays without the index page' => ['/users', '/users'];
+
+        yield 'index page used by the client is kept' => ['/index.php/users', '/index.php/users'];
+
+        yield 'percent-encoded segment stays encoded' => ['/caf%C3%A9', '/caf%C3%A9'];
+
+        yield 'absolute form drops scheme and authority' => ['http://example.com/app/users?x=1', '/app/users?x=1'];
+
+        yield 'absolute form without a path' => ['http://example.com?x=1', '/?x=1'];
+
+        yield 'absolute form scheme is matched in any case' => ['HTTP://Example.com/app/users?x=1', '/app/users?x=1'];
+
+        yield 'missing leading slash is added' => ['users?a=1', '/users?a=1'];
+
+        yield 'leading double slash collapses to one' => ['//evil.com/x', '/evil.com/x'];
+
+        yield 'leading triple slash collapses to one' => ['///users', '/users'];
+
+        yield 'leading slash and backslash collapse to one slash' => ['/\evil.com/x', '/evil.com/x'];
+
+        yield 'leading double backslash becomes one slash' => ['\\\\evil.com', '/evil.com'];
+
+        yield 'leading mixed run collapses to one slash' => ['/\/\x', '/x'];
+
+        yield 'absolute form with a doubled leading slash collapses' => ['http://host//evil.com/x', '/evil.com/x'];
+
+        yield 'interior double slash is kept' => ['/users//5', '/users//5'];
+
+        yield 'interior backslash is kept' => ['/a\b', '/a\b'];
+
+        yield 'double slash inside the query is kept' => ['/users?next=//evil.com', '/users?next=//evil.com'];
+
+        yield 'trailing slash kept' => ['/users/', '/users/'];
+
+        yield 'trailing slash kept before the query' => ['/users/?a=1', '/users/?a=1'];
+
+        yield 'trailing slash kept under a subfolder' => ['/app/users/', '/app/users/'];
+
+        yield 'no trailing slash added' => ['/users', '/users'];
+
+        yield 'slash only inside the query' => ['/users?next=/home/', '/users?next=/home/'];
+
+        yield 'query kept in the order and encoding sent' => ['/users?b=2&a=%2F1', '/users?b=2&a=%2F1'];
+    }
+
+    public function testPageUrlFromTheRequestUriAppearsInTheHtmlShell(): void
+    {
+        $html = $this->renderWithRequestUri('/app/users/?a=1', false);
+
+        $this->assertSame('/app/users/?a=1', $this->decodePageScript($html)['url']);
+    }
+
+    public function testPageUrlFallsBackToTheRoutePathWhenTheRequestUriIsEmpty(): void
+    {
+        $this->assertSame('/users', $this->pageUrlForRequestUri(''));
+    }
+
+    public function testResolverDecidesThePageUrlEvenWhenARequestUriIsPresent(): void
+    {
+        $inertia = new InertiaResponse('C', [], 'v1', self::SHELL_VIEW, urlResolver: static fn (IncomingRequest $request): string => '/custom');
+
+        $page = json_decode($this->renderWithRequestUri('/app/users/', true, $inertia), true, flags: JSON_THROW_ON_ERROR);
+
+        $this->assertSame('/custom', $page['url']);
+    }
+
+    public function testRequestUriIsRestoredAfterRendering(): void
+    {
+        $before = service('superglobals')->getServerArray();
+
+        $this->renderWithRequestUri('/app/users');
+
+        $this->assertSame($before, service('superglobals')->getServerArray());
+    }
+
     public function testPartialReloadAllowListResolvesOnlyRequestedPropsAndNeverInvokesTheRest(): void
     {
         $countsInvoked = false;
