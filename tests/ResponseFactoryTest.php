@@ -117,6 +117,14 @@ final class ResponseFactoryTest extends CIUnitTestCase
         $this->assertSame('default', $factory->defer(static fn (): int => 7)->group());
     }
 
+    public function testDeferBuildsARescuingPropOnlyWhenAsked(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+        $this->assertFalse($factory->defer(static fn (): int => 1)->shouldRescue());
+        $this->assertTrue($factory->defer(static fn (): int => 1, 'default', true)->shouldRescue());
+    }
+
     public function testOnceBuildsAOncePropThatResolvesOnceByDefault(): void
     {
         $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');

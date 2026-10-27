@@ -225,7 +225,7 @@ final class MergePropTest extends CIUnitTestCase
         $defer = (new ReflectionClass(DeferProp::class))->getConstructor();
 
         $this->assertSame(['value'], array_map(static fn (ReflectionParameter $p): string => $p->getName(), $merge?->getParameters() ?? []));
-        $this->assertSame(['callback', 'group'], array_map(static fn (ReflectionParameter $p): string => $p->getName(), $defer?->getParameters() ?? []));
+        $this->assertSame(['callback', 'group', 'rescue'], array_map(static fn (ReflectionParameter $p): string => $p->getName(), $defer?->getParameters() ?? []));
     }
 
     public function testAMergePropIsMergedOnConstructionAndADeferPropOnlyAfterMerge(): void

@@ -8,6 +8,7 @@ use Closure;
 use CodeIgniter\HTTP\IncomingRequest;
 use Ejklock\Ci4Inertia\Support\Header;
 use JsonSerializable;
+use Throwable;
 
 /**
  * Resolves the props of one render into the values to send and the page metadata, the way
@@ -64,6 +65,13 @@ final class PropsResolver
      * @var array<string, array{prop: string, expiresAt: int|null}>
      */
     private array $onceProps = [];
+
+    /**
+     * Paths of rescuing props whose resolution threw, in resolution order.
+     *
+     * @var list<string>
+     */
+    private array $rescuedProps = [];
 
     /**
      * @var list<string>
@@ -262,6 +270,10 @@ final class PropsResolver
             $metadata['deferredProps'] = (object) $metadata['deferredProps'];
         }
 
+        if ($this->rescuedProps !== []) {
+            $metadata['rescuedProps'] = $this->rescuedProps;
+        }
+
         if ($this->onceProps !== []) {
             // An object for the same reason as the deferred groups: a key like "7" must stay a map key.
             $metadata['onceProps'] = (object) $this->onceProps;
@@ -299,6 +311,10 @@ final class PropsResolver
             }
 
             $value = $this->resolveValue($prop, $path, $props);
+
+            if (in_array($path, $this->rescuedProps, true)) {
+                continue;
+            }
 
             // A closure may return a prop type; it is unwrapped one level so that type takes part
             // in the filtering and the metadata below.
@@ -421,15 +437,42 @@ final class PropsResolver
      */
     private function resolveValue(mixed $value, string $path, array $siblings): mixed
     {
-        if (is_object($value) && is_callable($value)) {
-            $value = $value();
-        }
+        $shouldRescue = $value instanceof Rescuable && $value->shouldRescue();
 
-        if ($value instanceof ProvidesInertiaProperty) {
-            $value = $value->toInertiaProperty(new PropertyContext($path, $siblings, $this->request));
-        }
+        try {
+            if (is_object($value) && is_callable($value)) {
+                $value = $value();
+            }
 
-        return $value instanceof JsonSerializable ? $value->jsonSerialize() : $value;
+            if ($value instanceof ProvidesInertiaProperty) {
+                $value = $value->toInertiaProperty(new PropertyContext($path, $siblings, $this->request));
+            }
+
+            return $value instanceof JsonSerializable ? $value->jsonSerialize() : $value;
+        } catch (Throwable $e) {
+            if (! $shouldRescue) {
+                throw $e;
+            }
+
+            $this->logRescued($e);
+            $this->rescuedProps[] = $path;
+
+            return null;
+        }
+    }
+
+    /**
+     * Logs a rescued throwable in the shape the framework's exception handler uses, at `error`
+     * because the request carries on.
+     */
+    private function logRescued(Throwable $e): void
+    {
+        log_message('error', $e::class . ": {message}\nin {exFile} on line {exLine}.\n{trace}", [
+            'message' => $e->getMessage(),
+            'exFile'  => clean_path($e->getFile()),
+            'exLine'  => $e->getLine(),
+            'trace'   => render_backtrace($e->getTrace()),
+        ]);
     }
 
     private function isPropType(mixed $value): bool

@@ -11,6 +11,7 @@ use CodeIgniter\HTTP\SiteURI;
 use CodeIgniter\HTTP\UserAgent;
 use CodeIgniter\I18n\Time;
 use CodeIgniter\Test\CIUnitTestCase;
+use CodeIgniter\Test\TestLogger;
 use Config\App as AppConfig;
 use DateInterval;
 use DateTimeImmutable;
@@ -26,12 +27,14 @@ use Ejklock\Ci4Inertia\PropsResolver;
 use Ejklock\Ci4Inertia\ProvidesInertiaProperties;
 use Ejklock\Ci4Inertia\ProvidesInertiaProperty;
 use Ejklock\Ci4Inertia\RenderContext;
+use Ejklock\Ci4Inertia\Rescuable;
 use Ejklock\Ci4Inertia\ResponseFactory;
 use Exception;
 use Generator;
 use InvalidArgumentException;
 use JsonSerializable;
 use PHPUnit\Framework\Attributes\DataProvider;
+use RuntimeException;
 use stdClass;
 
 /**
@@ -1274,6 +1277,150 @@ final class PropsResolverTest extends CIUnitTestCase
         $page = $this->renderPage(['p' => (new OnceProp(static fn (): int => 1))->until(60)]);
 
         $this->assertSame(($now + 60) * 1000, $page['onceProps']['p']['expiresAt']);
+    }
+
+    private function rescuingThrow(string $message = 'boom'): DeferProp
+    {
+        return new DeferProp(static fn (): never => throw new RuntimeException($message), 'default', true);
+    }
+
+    public function testARescuedThrowOnAPartialReloadDropsThePropListsItAndLogsAnError(): void
+    {
+        $page = $this->renderPage(
+            ['ok' => 1, 'stats' => $this->rescuingThrow('boom-dropped')],
+            $this->partial(['X-Inertia-Partial-Data' => 'stats,ok']),
+        );
+
+        $this->assertSame(['ok' => 1], $page['props']);
+        $this->assertSame(['stats'], $page['rescuedProps']);
+        $this->assertLogContains('error', RuntimeException::class . ': boom-dropped');
+    }
+
+    public function testTheRescuedLogLineNamesTheFileAndLineOfTheThrow(): void
+    {
+        $line = __LINE__ + 2;
+        $prop = new DeferProp(
+            static fn (): never => throw new RuntimeException('located-failure'),
+            'default',
+            true,
+        );
+
+        $this->renderPage(['stats' => $prop], $this->partial(['X-Inertia-Partial-Data' => 'stats']));
+
+        $this->assertLogContains('error', 'in ' . clean_path(__FILE__) . ' on line ' . $line . '.');
+    }
+
+    public function testARescuingPropThatIsNotRescuingLetsTheThrowPropagate(): void
+    {
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('boom');
+
+        $this->renderPage(
+            ['stats' => new DeferProp(static fn (): never => throw new RuntimeException('boom'), 'default', false)],
+            $this->partial(['X-Inertia-Partial-Data' => 'stats']),
+        );
+    }
+
+    public function testARescuingPropThatReturnsNormallyIsSentWithoutARescuedList(): void
+    {
+        $page = $this->renderPage(
+            ['stats' => new DeferProp(static fn (): int => 5, 'default', true)],
+            $this->partial(['X-Inertia-Partial-Data' => 'stats']),
+        );
+
+        $this->assertSame(['stats' => 5], $page['props']);
+        $this->assertArrayNotHasKey('rescuedProps', $page);
+    }
+
+    public function testEveryRescuedPropIsListedInPropOrder(): void
+    {
+        $page = $this->renderPage(
+            ['b' => $this->rescuingThrow('b-failed'), 'ok' => 1, 'a' => $this->rescuingThrow('a-failed')],
+            $this->partial(['X-Inertia-Partial-Data' => 'a,b,ok']),
+        );
+
+        $this->assertSame(['ok' => 1], $page['props']);
+        $this->assertSame(['b', 'a'], $page['rescuedProps']);
+    }
+
+    public function testARescuedThrowInANestedPropIsListedUnderItsDotPath(): void
+    {
+        $page = $this->renderPage(
+            ['a' => ['b' => $this->rescuingThrow('nested-failed'), 'c' => 2]],
+            $this->partial(['X-Inertia-Partial-Data' => 'a']),
+        );
+
+        $this->assertSame(['a' => ['c' => 2]], $page['props']);
+        $this->assertSame(['a.b'], $page['rescuedProps']);
+    }
+
+    public function testAClosureReturningARescuingThrowingPropKeepsTheKeyAsNullAndListsIt(): void
+    {
+        $rescuing = $this->rescuingThrow('closure-failed');
+
+        $page = $this->renderPage(
+            ['stats' => static fn (): DeferProp => $rescuing],
+            $this->partial(['X-Inertia-Partial-Data' => 'stats']),
+        );
+
+        $this->assertSame(['stats' => null], $page['props']);
+        $this->assertSame(['stats'], $page['rescuedProps']);
+    }
+
+    public function testRescuedPropsComeAfterTheMergeListsAndBeforeOnceProps(): void
+    {
+        $page = $this->renderPage(
+            [
+                'feed'  => new MergeProp([1]),
+                'stats' => $this->rescuingThrow('order-failed'),
+                'once'  => new OnceProp(static fn (): int => 2),
+            ],
+            $this->partial(['X-Inertia-Partial-Data' => 'feed,stats,once']),
+        );
+
+        $this->assertSame(['mergeProps', 'rescuedProps', 'onceProps'], array_values(array_intersect(array_keys($page), ['mergeProps', 'rescuedProps', 'onceProps'])));
+    }
+
+    public function testAThrowFromAPropThatIsNotRescuingIsNeverSwallowedOrLogged(): void
+    {
+        $throwing = static fn (): never => throw new RuntimeException('not-rescued');
+
+        foreach ([new OptionalProp($throwing), $throwing, new DeferProp($throwing)] as $prop) {
+            try {
+                $this->renderPage(['p' => $prop], $this->partial(['X-Inertia-Partial-Data' => 'p']));
+                $this->fail('The throw was swallowed.');
+            } catch (RuntimeException $e) {
+                $this->assertSame('not-rescued', $e->getMessage());
+            }
+        }
+
+        $this->assertFalse(TestLogger::didLog('error', 'not-rescued', false));
+    }
+
+    public function testARescuingDeferPropLeftOutOfAFullRenderIsNotCalledAndNotListedAsRescued(): void
+    {
+        $calls = $this->newCalls();
+        $prop  = new DeferProp($this->recording($calls, 'stats', 1), 'default', true);
+
+        $page = $this->renderPage(['stats' => $prop]);
+
+        $this->assertSame([], $page['props']);
+        $this->assertCount(0, $calls);
+        $this->assertArrayNotHasKey('rescuedProps', $page);
+    }
+
+    public function testADeferPropCarriesItsRescueFlagThroughEveryCopy(): void
+    {
+        $this->assertFalse((new DeferProp(static fn (): int => 1))->shouldRescue());
+
+        $rescuing = new DeferProp(static fn (): int => 1, 'g', true);
+
+        $this->assertTrue($rescuing->shouldRescue());
+        $this->assertContains(Rescuable::class, class_implements($rescuing));
+        $this->assertTrue($rescuing->merge()->shouldRescue());
+        $this->assertTrue($rescuing->defer('x')->shouldRescue());
+        $this->assertTrue($rescuing->once()->shouldRescue());
+        $this->assertTrue($rescuing->deepMerge()->append('a')->shouldRescue());
     }
 
     protected function tearDown(): void

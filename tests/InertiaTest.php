@@ -191,6 +191,14 @@ final class InertiaTest extends CIUnitTestCase
         $this->assertSame('side', $prop->group());
     }
 
+    public function testDeferBuildsARescuingPropOnlyWhenAsked(): void
+    {
+        $this->injectFactory();
+
+        $this->assertFalse(Inertia::defer(static fn (): int => 5)->shouldRescue());
+        $this->assertTrue(Inertia::defer(static fn (): int => 5, 'default', true)->shouldRescue());
+    }
+
     public function testMergeAndDeepMergePropsAreListedByTheRender(): void
     {
         $this->injectFactory();

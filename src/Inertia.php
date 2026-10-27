@@ -109,14 +109,16 @@ final class Inertia
      * @param callable $callback Produces the prop's value; invoked only when a partial reload
      *                           reaches the prop.
      * @param string   $group    The batch the client loads this prop in.
+     * @param bool     $rescue   Whether a throw from the callback is logged and the prop left out
+     *                           of the response, listed under `rescuedProps`.
      *
      * @throws InvalidArgumentException When the group is empty or whitespace only.
      *
      * @see ResponseFactory::defer()
      */
-    public static function defer(callable $callback, string $group = 'default'): DeferProp
+    public static function defer(callable $callback, string $group = 'default', bool $rescue = false): DeferProp
     {
-        return self::factory()->defer($callback, $group);
+        return self::factory()->defer($callback, $group, $rescue);
     }
 
     /**

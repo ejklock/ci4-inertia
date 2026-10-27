@@ -309,12 +309,15 @@ final class ResponseFactory
      * @param callable $callback Produces the prop's value; invoked only when a partial reload
      *                           reaches the prop.
      * @param string   $group    The batch the client loads this prop in.
+     * @param bool     $rescue   Whether a throw from the callback is logged and the prop left out
+     *                           of the response, listed under `rescuedProps`, instead of failing
+     *                           the request.
      *
      * @throws InvalidArgumentException When the group is empty or whitespace only.
      */
-    public function defer(callable $callback, string $group = 'default'): DeferProp
+    public function defer(callable $callback, string $group = 'default', bool $rescue = false): DeferProp
     {
-        return new DeferProp($callback, $group);
+        return new DeferProp($callback, $group, $rescue);
     }
 
     /**

@@ -21,8 +21,11 @@ use ReflectionClass;
  * matching merge list, with the same meaning as for `MergeProp`. The fluent methods keep
  * Laravel's names and effects, but the prop is immutable: each call returns a new instance. It can
  * also be marked once, so the client keeps its copy after loading it.
+ *
+ * A prop built with `rescue` set is left out of the response when its callback throws: the
+ * throwable is logged, and the prop's path is listed under the page object's `rescuedProps`.
  */
-final readonly class DeferProp implements Deferrable, IgnoreFirstLoad, Mergeable, Onceable
+final readonly class DeferProp implements Deferrable, IgnoreFirstLoad, Mergeable, Onceable, Rescuable
 {
     use ResolvesCallables;
     use ResolvesOnce;
@@ -41,10 +44,12 @@ final readonly class DeferProp implements Deferrable, IgnoreFirstLoad, Mergeable
      * @param string|null $group    The name the client batches this prop's follow-up request
      *                              under; props sharing a group load together. `default` when
      *                              `null`.
+     * @param bool        $rescue   Whether a throw from the callback is logged and the prop left
+     *                              out instead of failing the request.
      *
      * @throws InvalidArgumentException When the group is empty or whitespace only.
      */
-    public function __construct(callable $callback, ?string $group = null)
+    public function __construct(callable $callback, ?string $group = null, private bool $rescue = false)
     {
         $this->callback = $callback;
         $this->group    = self::checkedGroup($group);
@@ -75,6 +80,11 @@ final readonly class DeferProp implements Deferrable, IgnoreFirstLoad, Mergeable
     public function shouldDefer(): bool
     {
         return true;
+    }
+
+    public function shouldRescue(): bool
+    {
+        return $this->rescue;
     }
 
     public function group(): string
@@ -195,6 +205,8 @@ final readonly class DeferProp implements Deferrable, IgnoreFirstLoad, Mergeable
         $copy->merges = $merges ?? $this->merges;
         // @phpstan-ignore property.readOnlyAssignNotInConstructor
         $copy->once = $once ?? $this->once;
+        // @phpstan-ignore property.readOnlyAssignNotInConstructor
+        $copy->rescue = $this->rescue;
 
         return $copy;
     }
