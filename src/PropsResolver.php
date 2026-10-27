@@ -61,6 +61,18 @@ final class PropsResolver
     private array $deferredProps = [];
 
     /**
+     * @var array<string, array{prop: string, expiresAt: int|null}>
+     */
+    private array $onceProps = [];
+
+    /**
+     * @var list<string>
+     */
+    private readonly array $loadedOnceProps;
+
+    private readonly bool $isInertia;
+
+    /**
      * @var list<string>
      */
     private array $sharedPropKeys = [];
@@ -77,6 +89,9 @@ final class PropsResolver
         $this->only       = $this->parseHeader($request, Header::PARTIAL_ONLY);
         $this->except     = $this->parseHeader($request, Header::PARTIAL_EXCEPT);
         $this->resetProps = $this->parseHeader($request, Header::RESET) ?? [];
+
+        $this->loadedOnceProps = $this->parseHeader($request, Header::EXCEPT_ONCE_PROPS) ?? [];
+        $this->isInertia       = $request->getHeaderLine(Header::INERTIA) !== '';
     }
 
     /**
@@ -247,6 +262,11 @@ final class PropsResolver
             $metadata['deferredProps'] = (object) $metadata['deferredProps'];
         }
 
+        if ($this->onceProps !== []) {
+            // An object for the same reason as the deferred groups: a key like "7" must stay a map key.
+            $metadata['onceProps'] = (object) $this->onceProps;
+        }
+
         return $metadata;
     }
 
@@ -333,13 +353,30 @@ final class PropsResolver
      */
     private function excludeFromInitialResponse(mixed $prop, string $path): bool
     {
-        $deferred = $prop instanceof Deferrable && $prop->shouldDefer();
-
-        if (! $deferred && ! $prop instanceof IgnoreFirstLoad) {
-            return false;
+        if ($prop instanceof IgnoreFirstLoad) {
+            return $this->excludeIgnoredProp($prop, $path);
         }
 
-        if ($deferred) {
+        if ($prop instanceof Deferrable && $prop->shouldDefer()) {
+            return $this->excludeDeferredProp($prop, $path);
+        }
+
+        if ($this->isInertia && $this->wasAlreadyLoadedByClient($prop, $path)) {
+            $this->collectOnceMetadata($path, $prop);
+
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * An `IgnoreFirstLoad` prop is always left out. A deferred one is listed for the client to
+     * fetch unless the client already holds it as a once prop.
+     */
+    private function excludeIgnoredProp(IgnoreFirstLoad $prop, string $path): bool
+    {
+        if ($prop instanceof Deferrable && $prop->shouldDefer() && ! $this->wasAlreadyLoadedByClient($prop, $path)) {
             $this->deferredProps[$prop->group()][] = $path;
         }
 
@@ -347,7 +384,32 @@ final class PropsResolver
             $this->collectMergeableMetadata($path, $prop);
         }
 
+        $this->collectOnceMetadata($path, $prop);
+
         return true;
+    }
+
+    private function excludeDeferredProp(Deferrable $prop, string $path): bool
+    {
+        $this->deferredProps[$prop->group()][] = $path;
+
+        if ($prop instanceof Mergeable && $prop->shouldMerge()) {
+            $this->collectMergeableMetadata($path, $prop);
+        }
+
+        return true;
+    }
+
+    /**
+     * Whether the client already holds a once prop: it names the prop's key, or its path when it
+     * has none, and the prop is not forced to refresh.
+     */
+    private function wasAlreadyLoadedByClient(mixed $prop, string $path): bool
+    {
+        return $prop instanceof Onceable
+            && $prop->shouldResolveOnce()
+            && ! $prop->shouldBeRefreshed()
+            && in_array($prop->getKey() ?? $path, $this->loadedOnceProps, true);
     }
 
     /**
@@ -375,7 +437,8 @@ final class PropsResolver
         return $value instanceof AlwaysProp
             || $value instanceof Deferrable
             || $value instanceof IgnoreFirstLoad
-            || $value instanceof Mergeable;
+            || $value instanceof Mergeable
+            || $value instanceof Onceable;
     }
 
     private function collectMetadata(mixed $prop, string $path): void
@@ -383,6 +446,25 @@ final class PropsResolver
         if ($prop instanceof Mergeable && $prop->shouldMerge()) {
             $this->collectMergeableMetadata($path, $prop);
         }
+
+        $this->collectOnceMetadata($path, $prop);
+    }
+
+    /**
+     * Lists a once prop under its key, or its path when it has none, unless a partial reload
+     * does not reach the path.
+     */
+    private function collectOnceMetadata(string $path, mixed $prop): void
+    {
+        if (! $prop instanceof Onceable || ! $prop->shouldResolveOnce()) {
+            return;
+        }
+
+        if ($this->isPartial && ! $this->isIncludedInPartialMetadata($path)) {
+            return;
+        }
+
+        $this->onceProps[$prop->getKey() ?? $path] = ['prop' => $path, 'expiresAt' => $prop->expiresAt()];
     }
 
     private function collectMergeableMetadata(string $path, Mergeable $prop): void

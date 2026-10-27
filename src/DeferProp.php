@@ -19,10 +19,15 @@ use ReflectionClass;
  * turn merging on. `append()`, `prepend()` and `matchOn()` only shape the merge and leave a
  * prop that is not merging out of every merge list. A merging prop is also listed in the
  * matching merge list, with the same meaning as for `MergeProp`. The fluent methods keep
- * Laravel's names and effects, but the prop is immutable: each call returns a new instance.
+ * Laravel's names and effects, but the prop is immutable: each call returns a new instance. It can
+ * also be marked once, so the client keeps its copy after loading it.
  */
-final readonly class DeferProp implements Deferrable, IgnoreFirstLoad, Mergeable
+final readonly class DeferProp implements Deferrable, IgnoreFirstLoad, Mergeable, Onceable
 {
+    use ResolvesCallables;
+    use ResolvesOnce;
+
+    private OnceState $once;
     private mixed $callback;
     private string $group;
     private MergeProp $merging;
@@ -45,23 +50,16 @@ final readonly class DeferProp implements Deferrable, IgnoreFirstLoad, Mergeable
         $this->group    = self::checkedGroup($group);
         $this->merging  = new MergeProp([]);
         $this->merges   = false;
+        $this->once     = new OnceState();
     }
 
     /**
      * Resolves the deferred value: a closure or invokable object is called for it, while a
      * string or array callable comes back unchanged.
-     *
-     * @psalm-suppress InvalidFunctionCall An object here came through the callable-typed constructor.
      */
     public function __invoke(): mixed
     {
-        $callback = $this->callback;
-
-        if (is_object($callback)) {
-            return $callback();
-        }
-
-        return $callback;
+        return $this->resolveCallable($this->callback);
     }
 
     /**
@@ -182,7 +180,7 @@ final readonly class DeferProp implements Deferrable, IgnoreFirstLoad, Mergeable
      *
      * @psalm-suppress InaccessibleProperty The copy is a fresh instance whose readonly properties are still uninitialised.
      */
-    private function with(?string $group = null, ?MergeProp $merging = null, ?bool $merges = null): static
+    private function with(?string $group = null, ?MergeProp $merging = null, ?bool $merges = null, ?OnceState $once = null): static
     {
         $copy = (new ReflectionClass($this))->newInstanceWithoutConstructor();
 
@@ -195,7 +193,14 @@ final readonly class DeferProp implements Deferrable, IgnoreFirstLoad, Mergeable
         $copy->merging = $merging ?? $this->merging;
         // @phpstan-ignore property.readOnlyAssignNotInConstructor
         $copy->merges = $merges ?? $this->merges;
+        // @phpstan-ignore property.readOnlyAssignNotInConstructor
+        $copy->once = $once ?? $this->once;
 
         return $copy;
+    }
+
+    private function withOnce(OnceState $state): static
+    {
+        return $this->with(once: $state);
     }
 }

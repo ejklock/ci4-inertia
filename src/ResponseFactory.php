@@ -156,6 +156,18 @@ final class ResponseFactory
     }
 
     /**
+     * Marks a prop the client keeps after its first load: later Inertia visits that name it in
+     * `X-Inertia-Except-Once-Props` do not receive it again. Pass the result as a prop value to
+     * `render()` or `share()`.
+     *
+     * @param callable $callback Produces the prop's value; invoked only when the prop is sent.
+     */
+    public function once(callable $callback): OnceProp
+    {
+        return new OnceProp($callback);
+    }
+
+    /**
      * Marks a prop every response carries, partial reloads that name other props included:
      * pass the result as a prop value to `render()` or `share()`.
      *
@@ -328,6 +340,21 @@ final class ResponseFactory
     public function deepMerge(mixed $value): MergeProp
     {
         return (new MergeProp($value))->deepMerge();
+    }
+
+    /**
+     * Shares a once prop under the key and returns it, so it can still be configured with
+     * `as()`, `until()` or `fresh()`.
+     *
+     * @param string   $key      The prop name; a dot path nests the value.
+     * @param callable $callback Produces the prop's value; invoked only when the prop is sent.
+     */
+    public function shareOnce(string $key, callable $callback): OnceProp
+    {
+        $prop = new OnceProp($callback);
+        $this->share($key, $prop);
+
+        return $prop;
     }
 
     /**

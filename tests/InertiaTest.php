@@ -7,6 +7,7 @@ namespace Ejklock\Ci4Inertia\Tests;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\SiteURI;
 use CodeIgniter\HTTP\UserAgent;
+use CodeIgniter\I18n\Time;
 use CodeIgniter\Test\CIUnitTestCase;
 use Config\App as AppConfig;
 use Config\Services;
@@ -152,6 +153,33 @@ final class InertiaTest extends CIUnitTestCase
 
         $this->assertSame(409, $response->getStatusCode());
         $this->assertStringEndsWith('/y', $response->getHeaderLine('X-Inertia-Location'));
+    }
+
+    public function testShareOnceChainsOnTheSharedInstanceIntoTheRenderedPage(): void
+    {
+        $this->injectFactory();
+        Time::setTestNow('2030-01-01 00:00:00', 'UTC');
+
+        Inertia::shareOnce('plans', static fn (): int => 1)->as('catalog')->until(60);
+        $page = $this->pageOf(Inertia::render('C'));
+
+        Time::setTestNow();
+        $this->assertSame('plans', $page['onceProps']['catalog']['prop']);
+        $this->assertSame(
+            (strtotime('2030-01-01 00:00:00 UTC') + 60) * 1000,
+            $page['onceProps']['catalog']['expiresAt'],
+        );
+    }
+
+    public function testOnceModifiersChangeTheInstanceTheFacadeReturned(): void
+    {
+        $this->injectFactory();
+
+        $prop = Inertia::once(static fn (): int => 1);
+        $prop->fresh();
+
+        $this->assertTrue($prop->shouldBeRefreshed());
+        $this->assertSame(1, $prop());
     }
 
     public function testDeferReturnsADeferPropInTheGivenGroup(): void

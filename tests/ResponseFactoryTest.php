@@ -117,6 +117,38 @@ final class ResponseFactoryTest extends CIUnitTestCase
         $this->assertSame('default', $factory->defer(static fn (): int => 7)->group());
     }
 
+    public function testOnceBuildsAOncePropThatResolvesOnceByDefault(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+        $prop = $factory->once(static fn (): int => 4);
+
+        $this->assertTrue($prop->shouldResolveOnce());
+        $this->assertSame(4, $prop());
+    }
+
+    public function testShareOnceSharesTheSameInstanceUnderTheKeyAndListsIt(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+        $prop = $factory->shareOnce('plans', static fn (): int => 4);
+        $page = $this->renderPageObject($factory, 'Users/Index');
+
+        $this->assertSame($prop, $factory->getShared('plans'));
+        $this->assertSame(4, $page['props']['plans']);
+        $this->assertSame(['plans' => ['prop' => 'plans', 'expiresAt' => null]], $page['onceProps']);
+    }
+
+    public function testShareOnceWithADotKeyNestsTheProp(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+        $prop = $factory->shareOnce('auth.plans', static fn (): int => 4);
+
+        $this->assertSame($prop, $factory->getShared('auth.plans'));
+        $this->assertSame(['auth' => ['plans' => 4]], $this->renderPageObject($factory, 'Users/Index')['props']);
+    }
+
     public function testSharedDeferredPropIsListedAndLeftOutOfTheNextRender(): void
     {
         $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');

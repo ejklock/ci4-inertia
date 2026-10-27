@@ -13,10 +13,14 @@ use ReflectionClass;
  * (appended), `prependProps` (prepended) or `deepMergeProps` (deep-merged); the fields set
  * with `matchOn()` are listed under `matchPropsOn` so the client dedupes array items on them.
  * The fluent methods keep Laravel's names and effects, but the prop is immutable: each call
- * returns a new instance and leaves the original as it was.
+ * returns a new instance and leaves the original as it was. It can also be marked once, so the
+ * client keeps its copy after the first load.
  */
-final readonly class MergeProp implements Mergeable
+final readonly class MergeProp implements Mergeable, Onceable
 {
+    use ResolvesOnce;
+
+    private OnceState $once;
     private bool $deepMerge;
 
     /**
@@ -48,7 +52,8 @@ final readonly class MergeProp implements Mergeable
             'append'          => $this->append,
             'appendsAtPaths'  => $this->appendsAtPaths,
             'prependsAtPaths' => $this->prependsAtPaths,
-        ] = self::defaults();
+        ]           = self::defaults();
+        $this->once = new OnceState();
     }
 
     /**
@@ -224,6 +229,7 @@ final readonly class MergeProp implements Mergeable
         ?bool $append = null,
         ?array $appendsAtPaths = null,
         ?array $prependsAtPaths = null,
+        ?OnceState $once = null,
     ): static {
         $copy = (new ReflectionClass($this))->newInstanceWithoutConstructor();
 
@@ -240,7 +246,14 @@ final readonly class MergeProp implements Mergeable
         $copy->appendsAtPaths = $appendsAtPaths ?? $this->appendsAtPaths;
         // @phpstan-ignore property.readOnlyAssignNotInConstructor
         $copy->prependsAtPaths = $prependsAtPaths ?? $this->prependsAtPaths;
+        // @phpstan-ignore property.readOnlyAssignNotInConstructor
+        $copy->once = $once ?? $this->once;
 
         return $copy;
+    }
+
+    private function withOnce(OnceState $state): static
+    {
+        return $this->with(once: $state);
     }
 }

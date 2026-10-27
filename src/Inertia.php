@@ -227,6 +227,22 @@ final class Inertia
     }
 
     /**
+     * @see ResponseFactory::once()
+     */
+    public static function once(callable $callback): OnceProp
+    {
+        return self::factory()->once($callback);
+    }
+
+    /**
+     * @see ResponseFactory::shareOnce()
+     */
+    public static function shareOnce(string $key, callable $callback): OnceProp
+    {
+        return self::factory()->shareOnce($key, $callback);
+    }
+
+    /**
      * @see ResponseFactory::always()
      */
     public static function always(mixed $value): AlwaysProp

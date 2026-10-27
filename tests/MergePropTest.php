@@ -411,4 +411,29 @@ final class MergePropTest extends CIUnitTestCase
 
         $this->assertCount(0, $calls);
     }
+
+    public function testMergeOnceIsListedUnderOnceAndStillMergedOnAFirstVisit(): void
+    {
+        $page = $this->renderPage(['feed' => (new MergeProp([1]))->once()]);
+
+        $this->assertSame(['feed'], $page['mergeProps']);
+        $this->assertSame(['feed' => ['prop' => 'feed', 'expiresAt' => null]], $page['onceProps']);
+    }
+
+    public function testMergeOnceTheClientAlreadyHasIsNotSentAgain(): void
+    {
+        $page = $this->renderPage(['feed' => (new MergeProp([1]))->once()], ['X-Inertia-Except-Once-Props' => 'feed']);
+
+        $this->assertArrayNotHasKey('feed', $page['props']);
+        $this->assertArrayHasKey('feed', $page['onceProps']);
+    }
+
+    public function testOnceModifiersLeaveTheOriginalMergePropUntouched(): void
+    {
+        $original = new MergeProp([1]);
+        $original->once()->as('k')->fresh()->until(30);
+
+        $this->assertFalse($original->shouldResolveOnce());
+        $this->assertArrayNotHasKey('onceProps', $this->renderPage(['p' => $original]));
+    }
 }

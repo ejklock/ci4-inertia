@@ -9,14 +9,20 @@ use Closure;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\SiteURI;
 use CodeIgniter\HTTP\UserAgent;
+use CodeIgniter\I18n\Time;
 use CodeIgniter\Test\CIUnitTestCase;
 use Config\App as AppConfig;
+use DateInterval;
+use DateTimeImmutable;
 use Ejklock\Ci4Inertia\AlwaysProp;
 use Ejklock\Ci4Inertia\DeferProp;
 use Ejklock\Ci4Inertia\Deferrable;
+use Ejklock\Ci4Inertia\Mergeable;
 use Ejklock\Ci4Inertia\MergeProp;
+use Ejklock\Ci4Inertia\OnceProp;
 use Ejklock\Ci4Inertia\OptionalProp;
 use Ejklock\Ci4Inertia\PropertyContext;
+use Ejklock\Ci4Inertia\PropsResolver;
 use Ejklock\Ci4Inertia\ProvidesInertiaProperties;
 use Ejklock\Ci4Inertia\ProvidesInertiaProperty;
 use Ejklock\Ci4Inertia\RenderContext;
@@ -368,6 +374,30 @@ final class PropsResolverTest extends CIUnitTestCase
 
         $this->assertSame($arrayCallable, (new OptionalProp($arrayCallable))());
         $this->assertSame($arrayCallable, (new DeferProp($arrayCallable))());
+    }
+
+    public function testOnceAndOptionalPropsResolveCallableObjectsAndKeepStringAndArrayCallables(): void
+    {
+        $invokable = new class () {
+            public function __invoke(): string
+            {
+                return 'invoked';
+            }
+
+            public function method(): string
+            {
+                return 'method';
+            }
+        };
+        $method        = 'method';
+        $arrayCallable = [$invokable, $method];
+
+        foreach ([OnceProp::class, OptionalProp::class] as $class) {
+            $this->assertSame('closure', (new $class(static fn (): string => 'closure'))());
+            $this->assertSame('invoked', (new $class($invokable))());
+            $this->assertSame('strtoupper', (new $class('strtoupper'))());
+            $this->assertSame($arrayCallable, (new $class($arrayCallable))());
+        }
     }
 
     public function testAPartialDataPrefixOnlyMatchesUpToADot(): void
@@ -901,4 +931,369 @@ final class PropsResolverTest extends CIUnitTestCase
 
         $this->assertSame(['auth' => ['name' => 'Ada']], $page['props']);
     }
+
+    public function testAOnceCallbackIsSentAndListedOnAFirstVisit(): void
+    {
+        $page = $this->renderPage(['plans' => new OnceProp(static fn (): string => 'v')]);
+
+        $this->assertSame('v', $page['props']['plans']);
+        $this->assertSame(['plans' => ['prop' => 'plans', 'expiresAt' => null]], $page['onceProps']);
+    }
+
+    public function testAnInertiaVisitNamingAOnceKeyLeavesTheCallbackUncalledAndStillListsIt(): void
+    {
+        $calls = $this->newCalls();
+        $page  = $this->renderPage(
+            ['plans' => new OnceProp($this->recording($calls, 'plans', 'v'))],
+            ['X-Inertia-Except-Once-Props' => 'plans'],
+        );
+
+        $this->assertArrayNotHasKey('plans', $page['props']);
+        $this->assertCount(0, $calls);
+        $this->assertSame(['plans' => ['prop' => 'plans', 'expiresAt' => null]], $page['onceProps']);
+    }
+
+    public function testANonInertiaVisitNamingAOnceKeyStillSendsTheProp(): void
+    {
+        $config  = config(AppConfig::class);
+        $request = new IncomingRequest($config, new SiteURI($config, 'users'), null, new UserAgent());
+        $request->setHeader('X-Inertia-Except-Once-Props', 'plans');
+
+        [$props, $metadata] = (new PropsResolver($request, self::COMPONENT))
+            ->resolve([], ['plans' => new OnceProp(static fn (): string => 'v')]);
+
+        $this->assertSame(['plans' => 'v'], $props);
+        $this->assertArrayHasKey('plans', (array) $metadata['onceProps']);
+    }
+
+    public function testACustomKeyIsListedWithThePathAndMustBeNamedToSkipTheProp(): void
+    {
+        $prop = (new OnceProp(static fn (): string => 'v'))->as('catalog');
+
+        $byPath = $this->renderPage(['plans' => $prop], ['X-Inertia-Except-Once-Props' => 'plans']);
+        $byKey  = $this->renderPage(['plans' => $prop], ['X-Inertia-Except-Once-Props' => 'catalog']);
+
+        $this->assertSame('v', $byPath['props']['plans']);
+        $this->assertSame(['catalog' => ['prop' => 'plans', 'expiresAt' => null]], $byPath['onceProps']);
+        $this->assertArrayNotHasKey('plans', $byKey['props']);
+        $this->assertSame(['catalog' => ['prop' => 'plans', 'expiresAt' => null]], $byKey['onceProps']);
+    }
+
+    public function testAFreshOnceIsSentEvenWhenTheClientNamesIt(): void
+    {
+        $page = $this->renderPage(
+            ['plans' => (new OnceProp(static fn (): string => 'v'))->fresh()],
+            ['X-Inertia-Except-Once-Props' => 'plans'],
+        );
+
+        $this->assertSame('v', $page['props']['plans']);
+        $this->assertArrayHasKey('plans', $page['onceProps']);
+    }
+
+    public function testANestedOnceIsListedByItsPath(): void
+    {
+        $page = $this->renderPage(['auth' => ['plans' => new OnceProp(static fn (): string => 'v')]]);
+
+        $this->assertSame(['auth.plans' => ['prop' => 'auth.plans', 'expiresAt' => null]], $page['onceProps']);
+
+        $skipped = $this->renderPage(
+            ['auth' => ['plans' => new OnceProp(static fn (): string => 'v'), 'name' => 'Ada']],
+            ['X-Inertia-Except-Once-Props' => 'auth.plans'],
+        );
+
+        $this->assertSame(['name' => 'Ada'], $skipped['props']['auth']);
+    }
+
+    public function testAPartialReloadNamingAOnceSendsAndListsIt(): void
+    {
+        $page = $this->renderPage(
+            ['plans' => new OnceProp(static fn (): string => 'v'), 'other' => 1],
+            $this->partial(['X-Inertia-Partial-Data' => 'plans', 'X-Inertia-Except-Once-Props' => 'plans']),
+        );
+
+        $this->assertSame(['plans' => 'v'], $page['props']);
+        $this->assertArrayHasKey('plans', $page['onceProps']);
+    }
+
+    public function testAPartialReloadNamingAnotherKeyDoesNotListTheOnce(): void
+    {
+        $page = $this->renderPage(
+            ['plans' => new OnceProp(static fn (): string => 'v'), 'other' => 1],
+            $this->partial(['X-Inertia-Partial-Data' => 'other']),
+        );
+
+        $this->assertArrayNotHasKey('onceProps', $page);
+    }
+
+    public function testAPartialReloadBelowAOncePropDoesNotListIt(): void
+    {
+        $props = ['auth' => new OnceProp(static fn (): array => ['name' => 'Ada', 'x' => 1])];
+
+        $below = $this->renderPage($props, $this->partial(['X-Inertia-Partial-Data' => 'auth.name']));
+        $named = $this->renderPage($props, $this->partial(['X-Inertia-Partial-Data' => 'auth']));
+
+        $this->assertSame('Ada', $below['props']['auth']['name']);
+        $this->assertArrayNotHasKey('onceProps', $below);
+        $this->assertArrayHasKey('auth', $named['onceProps']);
+    }
+
+    public function testAnIntervalExpiryFollowsTheApplicationTimezoneAcrossADstChange(): void
+    {
+        $config              = config(AppConfig::class);
+        $previous            = $config->appTimezone;
+        $config->appTimezone = 'Europe/Berlin';
+
+        try {
+            Time::setTestNow('2030-03-30 12:00:00', 'Europe/Berlin');
+            $now = Time::now()->getTimestamp();
+
+            $expiresAt = (new MergeProp([1]))->once()->until(new DateInterval('P1D'))->expiresAt();
+
+            $this->assertSame(($now + 23 * 3600) * 1000, $expiresAt);
+        } finally {
+            $config->appTimezone = $previous;
+        }
+    }
+
+    public function testAPageWithoutOnceMarkedPropsHasNoOnceProps(): void
+    {
+        $this->assertArrayNotHasKey('onceProps', $this->renderPage(['a' => 1, 'b' => new MergeProp([1])]));
+    }
+
+    public function testOncePropsAreTheLastMetadataKey(): void
+    {
+        $page = $this->renderPage([
+            'plans' => new OnceProp(static fn (): int => 1),
+            'later' => (new DeferProp(static fn (): int => 1))->merge(),
+        ]);
+
+        $this->assertSame('onceProps', array_key_last($this->metadata($page)));
+    }
+
+    public function testAnIntegerLikeOnceKeyStaysAJsonObject(): void
+    {
+        $config  = config(AppConfig::class);
+        $request = new IncomingRequest($config, new SiteURI($config, 'users'), null, new UserAgent());
+        $request->setHeader('X-Inertia', 'true');
+        $factory = new ResponseFactory($request, 'app', static fn (): string => 'v1');
+        $body    = (string) preg_replace('/\s+/', '', (string) $factory
+            ->render(self::COMPONENT, ['a' => (new OnceProp(static fn (): int => 1))->as('0')])
+            ->toResponse($request, service('response', null, false))
+            ->getBody());
+
+        $this->assertStringContainsString('"onceProps":{"0":{"prop":"a","expiresAt":null}}', $body);
+    }
+
+    public function testADeferredOnceIsExcludedAndListedAsDeferredAndOnce(): void
+    {
+        $page = $this->renderPage(['p' => (new DeferProp(static fn (): int => 1))->once()]);
+
+        $this->assertArrayNotHasKey('p', $page['props']);
+        $this->assertSame(['default' => ['p']], $page['deferredProps']);
+        $this->assertSame(['p' => ['prop' => 'p', 'expiresAt' => null]], $page['onceProps']);
+    }
+
+    public function testADeferredOnceTheClientHasIsNotListedAsDeferredButStaysOnce(): void
+    {
+        $page = $this->renderPage(
+            ['p' => (new DeferProp(static fn (): int => 1))->once()],
+            ['X-Inertia-Except-Once-Props' => 'p'],
+        );
+
+        $this->assertArrayNotHasKey('p', $page['props']);
+        $this->assertArrayNotHasKey('deferredProps', $page);
+        $this->assertArrayHasKey('p', $page['onceProps']);
+    }
+
+    public function testAMergeOnceIsSentListedAsMergeAndOnceAndSkippedWhenTheClientHasIt(): void
+    {
+        $prop = (new MergeProp([1]))->once();
+
+        $first = $this->renderPage(['m' => $prop]);
+        $later = $this->renderPage(['m' => $prop], ['X-Inertia-Except-Once-Props' => 'm']);
+
+        $this->assertSame([1], $first['props']['m']);
+        $this->assertSame(['m'], $first['mergeProps']);
+        $this->assertArrayHasKey('m', $first['onceProps']);
+        $this->assertArrayNotHasKey('m', $later['props']);
+    }
+
+    public function testAnOptionalOnceIsExcludedOnAFirstVisitAndListed(): void
+    {
+        $calls = $this->newCalls();
+        $page  = $this->renderPage(['o' => (new OptionalProp($this->recording($calls, 'o', 1)))->once()]);
+
+        $this->assertArrayNotHasKey('o', $page['props']);
+        $this->assertCount(0, $calls);
+        $this->assertSame(['o' => ['prop' => 'o', 'expiresAt' => null]], $page['onceProps']);
+    }
+
+    public function testOnceSwitchedOffRestoresThePlainBehaviour(): void
+    {
+        $page = $this->renderPage(
+            ['m' => (new MergeProp([1]))->once(false)],
+            ['X-Inertia-Except-Once-Props' => 'm'],
+        );
+
+        $this->assertSame([1], $page['props']['m']);
+        $this->assertArrayNotHasKey('onceProps', $page);
+    }
+
+    public function testOnceTakesTheKeyAndTheExpiryInOneCall(): void
+    {
+        Time::setTestNow('2030-01-01 00:00:00', 'UTC');
+        $now = Time::now()->getTimestamp();
+
+        $page = $this->renderPage(['p' => (new MergeProp([1]))->once(true, 'k', 60)]);
+
+        $this->assertSame(['k' => ['prop' => 'p', 'expiresAt' => ($now + 60) * 1000]], $page['onceProps']);
+    }
+
+    public function testEachOnceModifierReturnsANewInstanceAndLeavesTheOriginal(): void
+    {
+        $original = new DeferProp(static fn (): int => 1);
+
+        foreach ([$original->once(), $original->once()->as('k'), $original->once()->fresh(), $original->once()->until(5)] as $copy) {
+            $this->assertNotSame($original, $copy);
+        }
+
+        $this->assertFalse($original->shouldResolveOnce());
+        $this->assertNull($original->getKey());
+        $this->assertFalse($original->shouldBeRefreshed());
+        $this->assertNull($original->expiresAt());
+    }
+
+    public function testAClosureReturningAOncePropListsTheUnwrappedProp(): void
+    {
+        $page = $this->renderPage(['p' => static fn (): OnceProp => (new OnceProp(static fn (): string => 'v'))->as('k')]);
+
+        $this->assertSame('v', $page['props']['p']);
+        $this->assertSame(['k' => ['prop' => 'p', 'expiresAt' => null]], $page['onceProps']);
+    }
+
+    public function testAnIntegerBackedEnumKeyIsListedAsAString(): void
+    {
+        $page = $this->renderPage(['p' => (new OnceProp(static fn (): int => 1))->as(OnceKeyInt::One)]);
+
+        $this->assertSame(['1' => ['prop' => 'p', 'expiresAt' => null]], $page['onceProps']);
+    }
+
+    public function testADeferringDeferrableIsListedAsMergedOnlyWhileItMerges(): void
+    {
+        $make = static fn (bool $merges): Deferrable => new class ($merges) implements Deferrable, Mergeable {
+            public function __construct(private readonly bool $merges)
+            {
+            }
+
+            public function shouldDefer(): bool
+            {
+                return true;
+            }
+
+            public function group(): string
+            {
+                return 'default';
+            }
+
+            public function merge(): static
+            {
+                return $this;
+            }
+
+            public function shouldMerge(): bool
+            {
+                return $this->merges;
+            }
+
+            public function shouldDeepMerge(): bool
+            {
+                return false;
+            }
+
+            public function matchesOn(): array
+            {
+                return [];
+            }
+
+            public function appendsAtRoot(): bool
+            {
+                return true;
+            }
+
+            public function prependsAtRoot(): bool
+            {
+                return false;
+            }
+
+            public function appendsAtPaths(): array
+            {
+                return [];
+            }
+
+            public function prependsAtPaths(): array
+            {
+                return [];
+            }
+        };
+
+        $merging    = $this->renderPage(['p' => $make(true)]);
+        $notMerging = $this->renderPage(['p' => $make(false)]);
+
+        $this->assertSame(['p'], $merging['mergeProps']);
+        $this->assertSame(['default' => ['p']], $merging['deferredProps']);
+        $this->assertArrayNotHasKey('mergeProps', $notMerging);
+        $this->assertSame(['default' => ['p']], $notMerging['deferredProps']);
+    }
+
+    public function testExpiryFollowsTheClock(): void
+    {
+        Time::setTestNow('2030-01-01 00:00:00', 'UTC');
+        $now  = Time::now()->getTimestamp();
+        $prop = new MergeProp([1]);
+
+        $this->assertSame(($now + 60) * 1000, $prop->once()->until(60)->expiresAt());
+        $this->assertSame(($now + 120) * 1000, $prop->once()->until(new DateInterval('PT2M'))->expiresAt());
+        $this->assertSame(($now + 90) * 1000, $prop->once()->until(new DateTimeImmutable('@' . ($now + 90)))->expiresAt());
+        $this->assertSame($now * 1000, $prop->once()->until(new DateTimeImmutable('@' . ($now - 500)))->expiresAt());
+        $this->assertNull($prop->once()->expiresAt());
+    }
+
+    public function testTheKeyAcceptsEnumsByValueOrName(): void
+    {
+        $prop = new MergeProp([1]);
+
+        $this->assertSame('plans', $prop->as(OnceKeyBacked::Plans)->getKey());
+        $this->assertSame('Pure', $prop->as(OnceKeyPure::Pure)->getKey());
+    }
+
+    public function testTheExpiryAppearsInThePageMetadata(): void
+    {
+        Time::setTestNow('2030-01-01 00:00:00', 'UTC');
+        $now = Time::now()->getTimestamp();
+
+        $page = $this->renderPage(['p' => (new OnceProp(static fn (): int => 1))->until(60)]);
+
+        $this->assertSame(($now + 60) * 1000, $page['onceProps']['p']['expiresAt']);
+    }
+
+    protected function tearDown(): void
+    {
+        Time::setTestNow();
+        parent::tearDown();
+    }
+}
+
+enum OnceKeyBacked: string
+{
+    case Plans = 'plans';
+}
+
+enum OnceKeyInt: int
+{
+    case One = 1;
+}
+
+enum OnceKeyPure
+{
+    case Pure;
 }
