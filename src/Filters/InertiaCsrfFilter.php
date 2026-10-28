@@ -74,10 +74,17 @@ final class InertiaCsrfFilter extends CSRF
 
     /**
      * The URL itself when its scheme, host and port are the site's own, as `site_url()`
-     * builds them from the base URL and the allowed hostnames, else null.
+     * builds them from the base URL and the allowed hostnames, else null. A URL with a
+     * backslash or a control character is not on the site either: PHP reads
+     * `http://evil.example\@example.com/` as host `example.com`, but a browser follows it to
+     * `evil.example`, so the two parsers disagree about where it goes.
      */
     private function onSite(string $url): ?string
     {
+        if (preg_match('/[\\\\\x00-\x1f\x7f]/', $url) === 1) {
+            return null;
+        }
+
         try {
             $target = new URI($url);
             $site   = new URI(site_url('/'));

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Security
+
+- `InertiaCsrfFilter` no longer redirects a refused Inertia visit to a `Referer` or a stored previous URL that holds a backslash or a control character, which PHP and a browser read as two different hosts; it falls back to the next on-site URL.
+
 ## [0.2.0] - 2026-10-26
 
 ### Added

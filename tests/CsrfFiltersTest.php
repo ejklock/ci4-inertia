@@ -276,6 +276,74 @@ final class CsrfFiltersTest extends CIUnitTestCase
         yield 'userinfo' => ['http://' . $host . ':' . ($base['port'] ?? 80) . '@evil.example/'];
     }
 
+    public function testInertiaRequestWithARefererHoldingABackslashAndNoPreviousUrlIsRedirectedToTheSiteRoot(): void
+    {
+        service('superglobals')->setServer('HTTP_REFERER', self::backslashUrl());
+
+        $this->assertRedirectedBackWithExpiredNotice($this->send('POST', '/probe', ['X-Inertia' => 'true']), site_url('/'));
+    }
+
+    public function testInertiaRequestWithARefererHoldingABackslashFallsBackToTheOnSitePreviousUrl(): void
+    {
+        service('superglobals')->setServer('HTTP_REFERER', self::backslashUrl());
+
+        $this->assertRedirectedBackWithExpiredNotice(
+            $this->send('POST', '/probe', ['X-Inertia' => 'true'], previousUrl: site_url('/login')),
+            site_url('/login'),
+        );
+    }
+
+    #[DataProvider('providePreviousUrlHoldingAnAmbiguousCharacterAndNoRefererIsRedirectedToTheSiteRoot')]
+    public function testPreviousUrlHoldingAnAmbiguousCharacterAndNoRefererIsRedirectedToTheSiteRoot(string $previousUrl): void
+    {
+        $this->assertRedirectedBackWithExpiredNotice(
+            $this->send('POST', '/probe', ['X-Inertia' => 'true'], previousUrl: $previousUrl),
+            site_url('/'),
+        );
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function providePreviousUrlHoldingAnAmbiguousCharacterAndNoRefererIsRedirectedToTheSiteRoot(): iterable
+    {
+        $site = self::siteAuthority();
+
+        yield 'backslash' => [self::backslashUrl()];
+
+        yield 'null byte' => ["http://evil.example\x00@" . $site . '/'];
+
+        yield 'unit separator' => ["http://evil.example\x1f@" . $site . '/'];
+
+        yield 'delete' => ["http://evil.example\x7f@" . $site . '/'];
+
+        yield 'tab' => ["http://evil.example\t@" . $site . '/'];
+
+        yield 'newline' => ["http://evil.example\n@" . $site . '/'];
+    }
+
+    public function testPreviousUrlHoldingASpaceIsLeftToTheUrlParser(): void
+    {
+        $previousUrl = 'http://' . self::siteAuthority() . '/my page';
+
+        $this->assertRedirectedBackWithExpiredNotice(
+            $this->send('POST', '/probe', ['X-Inertia' => 'true'], previousUrl: $previousUrl),
+            $previousUrl,
+        );
+    }
+
+    private static function siteAuthority(): string
+    {
+        $base = parse_url(config(App::class)->baseURL);
+
+        return $base['host'] . (isset($base['port']) ? ':' . $base['port'] : '');
+    }
+
+    private static function backslashUrl(): string
+    {
+        return 'http://evil.example\\@' . self::siteAuthority() . '/';
+    }
+
     public function testInertiaRequestWithAnUnparseableRefererIsRedirectedToTheSiteRoot(): void
     {
         service('superglobals')->setServer('HTTP_REFERER', 'http:///x');
