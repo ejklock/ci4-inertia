@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- `Config\Inertia::$strictProps`, off by default, as inertia-laravel has no such option; with it off the output is the same as in 3.0.0. When on, building a page checks the resolved props and the flash data, at any depth, and throws `InvalidArgumentException` for any value that is not null, a scalar, an array, a plain `stdClass` (checked inside like an array) or a backed enum that is not `JsonSerializable`. The message names the dot path, which starts with `flash.` for flash data, and `get_debug_type()` of the value, never the value itself. A `JsonSerializable` prop type that a closure or a `ProvidesInertiaProperty` returns is sent as its `jsonSerialize()` value, as with the flag off, and that value is checked with the same rule; a non-callable prop type given as it is gets refused. A `stdClass` that refers back to an enclosing `stdClass` is refused at its path. The check runs when the response is built, not when `render()` or `share()` is called, and the refusal is thrown outside the rescue, so a rescuable deferred prop never hides it.
+
 ## [3.0.0] - 2026-10-28
 
 This release ports inertia-laravel 3.5.2 for the Inertia v3 client. To upgrade from 0.2.x, follow [UPGRADING.md](UPGRADING.md).

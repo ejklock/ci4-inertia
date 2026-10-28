@@ -18,7 +18,7 @@ Release notes are in [CHANGELOG.md](CHANGELOG.md). Moving from 2.x or from the 0
 - [Root view](#root-view), [Filters](#filters), [CSRF](#csrf), [Client setup](#client-setup)
 - [Rendering pages](#rendering-pages), [Helpers](#helpers), [Shared props](#shared-props)
 - [Validation errors and redirects](#validation-errors-and-redirects), [Flash data](#flash-data), [Asset versioning](#asset-versioning), [External redirects](#external-redirects)
-- Props: [Partial reloads](#partial-reloads), [Optional, always and deferred props](#optional-always-and-deferred-props), [Once props](#once-props), [Merge props](#merge-props), [Scroll props](#scroll-props), [Prop providers](#prop-providers)
+- Props: [Partial reloads](#partial-reloads), [Optional, always and deferred props](#optional-always-and-deferred-props), [Once props](#once-props), [Merge props](#merge-props), [Scroll props](#scroll-props), [Prop providers](#prop-providers), [Strict props](#strict-props)
 - [History encryption](#history-encryption), [Fragments](#preserving-the-url-fragment), [Big integers](#big-integers)
 - [Server-side rendering](#server-side-rendering), [Exception pages](#exception-pages)
 - [Testing](#testing), [Configuration](#configuration), [Not supported](#not-supported)
@@ -652,6 +652,18 @@ return service('inertia')->render('Users/Edit', new AuthProps());
 
 A class that implements `ProvidesInertiaProperty` converts into the value of one prop. Its `toInertiaProperty(PropertyContext $prop): mixed` receives the prop's dot path in `$prop->key`, its sibling props in `$prop->props` and the `request`.
 
+## Strict props
+
+Set `$strictProps` to `true` in your `Config\Inertia` to keep entities and other objects off the page. Building the page then throws an `InvalidArgumentException` naming the dot path and type of the first prop or flash value that is not `null`, a scalar, an array, a `stdClass` or a backed enum, such as `Inertia prop "auth.user" must hold only null, scalars, arrays, stdClass objects and backed enums that are not JsonSerializable when strictProps is on; App\Entities\User given.` A flash value reads `Inertia flash value "flash.user" …`. A `stdClass` that refers back to an enclosing `stdClass` is refused too. The message never contains the value.
+
+- Arrays are checked at every level, and so is the result of a closure, an invokable object, a prop class or a `ProvidesInertiaProperty`. A `JsonSerializable`, including CodeIgniter's `Entity`, and a non-backed enum are refused before `jsonSerialize()` runs. A backed enum that implements `JsonSerializable` is refused too, and so is a prop type that is not callable and that you give as it is. With the flag off, that prop type goes out as its `jsonSerialize()` value, or as its properties when it is not `JsonSerializable`; the package's own prop types are callable and resolve normally. A `JsonSerializable` prop type that a closure or a `ProvidesInertiaProperty` returns is sent as its `jsonSerialize()` value, as with the flag off, and that value is checked with the same rule, so an `Entity` inside it is refused at its path.
+- A plain `stdClass` is accepted as a data bag and checked inside, like an array: the path continues into its properties (`errors.email`), and an `Entity` inside it is refused at its inner path. A subclass of `stdClass` is not a data bag.
+- Flash data is checked the same way, with the path `flash.<key>` and deeper, such as `flash.user`, before the page is built.
+- The path is built from array keys. An array keyed by data, such as rows keyed by email, puts those keys in the exception message, and so in your logs.
+- The check runs when the response is built, not when `render()` or `share()` is called, and only on the props resolved for that response. A deferred or optional prop left out of the first load, or a prop a partial reload leaves out, is never resolved and never checked.
+- A violation is a programming error: a deferred prop with `rescue` set does not hide it.
+- It is off by default, for parity with inertia-laravel, which has no such option.
+
 ## History encryption
 
 Ask the client to encrypt the history state of pages, so the back button cannot show their data after a user logs out.
@@ -816,6 +828,7 @@ Override the defaults with your own `app/Config/Inertia.php` that extends `Ejklo
 | `rootView` | `string` | `'app'` | View rendered for a non-Inertia visit. It receives `$page`. |
 | `encryptHistory` | `bool` | `false` | Ask the client to encrypt history state on every page. |
 | `preserveBigIntegers` | `bool` | `false` | Send integers beyond 2^53 - 1 as `$bigint` markers. |
+| `strictProps` | `bool` | `false` | Refuse a prop or flash value that holds an object other than a `stdClass` or a backed enum; see [Strict props](#strict-props). |
 | `storePreviousUrl` | `bool` | `true` | Record an Inertia `GET` as CodeIgniter's previous URL, so `back()` returns to the page the visitor is on. |
 | `exposeSharedPropKeys` | `bool` | `true` | List the keys of `share()`d props under `sharedProps`. |
 | `ensurePagesExist` | `bool` | `false` | `render()` throws `ComponentNotFoundException` when no page file matches. |

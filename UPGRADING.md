@@ -105,7 +105,7 @@ Other changes to the prop classes:
 - A custom class that implemented `ResolvableProp` with `resolve()` implements `__invoke()` instead, or becomes a closure.
 - `DeferProp`, `OptionalProp` and `AlwaysProp` are resolved with `__invoke()`, not `resolve()`.
 - `new MergeProp($value)` takes any value. `new DeferProp($callback, $group, $rescue)` replaces `new DeferProp($callback, $group, $mergeState)`. Build both through `$inertia->merge()` and `$inertia->defer()` and nothing changes.
-- A prop value is no longer validated. A bare closure used to throw `InvalidArgumentException`.
+- A prop value is no longer validated. A bare closure used to throw `InvalidArgumentException`. To keep the 0.2 guard that no entity reaches the page, set `$strictProps` to `true` in your `Config\Inertia`; see [Strict props](README.md#strict-props).
 - The items of `X-Inertia-Partial-Data` and `X-Inertia-Partial-Except` are no longer trimmed.
 - Only a closure or an invokable object is called as a prop callback. A string or an array callable is sent as it is.
 

@@ -30,7 +30,14 @@ flowchart TD
 
     Val --> Call["call a callable object"]
     Call --> PIP["ProvidesInertiaProperty:<br/>toInertiaProperty(PropertyContext)"]
-    PIP --> JS["JsonSerializable:<br/>jsonSerialize()"]
+    PIP --> Prod{"closure or provider produced<br/>a prop type?"}
+    Prod -->|"no"| Strict
+    Prod -->|"yes, JsonSerializable"| Pre["jsonSerialize() once,<br/>marked as serialized"]
+    Pre --> Strict
+    Prod -->|"yes, any other prop type"| Unwrap
+    Strict{"strictProps on:<br/>value is plain data at any depth?"}
+    Strict -->|"no, strictProps on"| Refuse["throw InvalidArgumentException<br/>outside the rescue"]
+    Strict -->|"yes, or strictProps off"| JS["JsonSerializable not serialized yet:<br/>jsonSerialize()"]
     JS --> Resc{"threw and Rescuable<br/>with shouldRescue()?"}
     Resc -->|"yes"| Rescued["log, record rescuedProps"]
     Rescued --> Skip
@@ -43,10 +50,16 @@ flowchart TD
     Child -->|"yes"| Walk
     Child -->|"no"| Out["value kept"]
 
+    Flash["InertiaResponse::toPage: pulled flash data"] --> FlashCheck{"strictProps on:<br/>flash is plain data?"}
+    FlashCheck -->|"no, path starts with flash."| FlashRefuse["throw InvalidArgumentException<br/>(flash has no rescue)"]
+    FlashCheck -->|"yes, or strictProps off"| FlashOut["flash kept"]
+
     Out --> Meta["buildMetadata:<br/>sharedProps, mergeProps, prependProps, deepMergeProps,<br/>matchPropsOn, deferredProps, rescuedProps,<br/>scrollProps, onceProps"]
 ```
 
 A partial reload counts only when `X-Inertia-Partial-Component` names the component being rendered. `AlwaysProp` bypasses the `only` and `except` filter, and so do the children of a value that was not an array before it was resolved. A rescued prop is skipped by the walk and listed under `rescuedProps`, except when a closure returned the rescuing prop: that key stays in the props as `null`. A throwable from any other prop propagates.
+
+The strict steps run only with `Config\Inertia::$strictProps` on. The check sees the value after the callable and `ProvidesInertiaProperty` steps and before the final `jsonSerialize()`, so a `JsonSerializable` that is not a prop type is refused as it is, while a `JsonSerializable` prop type that a closure or a provider returned is serialized first and its `jsonSerialize()` value is checked. Arrays and `stdClass` objects are checked inside, and the walk reaches nested arrays through `resolveProps`. The refusal is thrown after the `try` block, so a rescuable prop never hides it; the same rule checks the flash data under paths that start with `flash.`. With the option off, none of these steps changes the output.
 
 ## Drift instrument
 

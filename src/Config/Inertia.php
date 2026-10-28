@@ -36,6 +36,23 @@ class Inertia extends BaseConfig
     public bool $preserveBigIntegers = false;
 
     /**
+     * Whether building a page checks the resolved props and the flash data, at any depth, and
+     * throws an `InvalidArgumentException` for a value that is not null, a scalar, an array, a
+     * plain `stdClass` (the exact class, checked inside like an array) or a backed enum that is
+     * not `JsonSerializable`, so an entity or any other object never reaches the page. The
+     * message names the dot path, which starts with `flash.` for flash data, and the value's
+     * `get_debug_type()`, never the value. A `JsonSerializable` prop type that a closure or a
+     * `ProvidesInertiaProperty` returns is sent as its `jsonSerialize()` value, as with the flag
+     * off, and that value is checked with the same rule; a non-callable prop type given as it
+     * is gets refused. A `stdClass` that refers back to an enclosing `stdClass` is refused at its path.
+     * The check runs when the response is built, not when `render()` or `share()` is called, and
+     * the refusal is thrown outside the rescue, so a rescuable deferred prop never hides it.
+     * Defaults to off, as inertia-laravel has no such option; with it off the output is the same
+     * as in 3.0.0.
+     */
+    public bool $strictProps = false;
+
+    /**
      * Whether `InertiaFilter` records an Inertia `GET` as CodeIgniter's previous URL
      * (`_ci_previous_url`), so `redirect()->back()` returns to the page the visitor is on.
      * CodeIgniter stores that URL only for non-AJAX HTML responses, so after an Inertia visit

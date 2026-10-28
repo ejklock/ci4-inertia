@@ -7,6 +7,8 @@ namespace Ejklock\Ci4Inertia;
 use Closure;
 use CodeIgniter\HTTP\IncomingRequest;
 use Ejklock\Ci4Inertia\Support\Header;
+use Ejklock\Ci4Inertia\Support\StrictPropValue;
+use InvalidArgumentException;
 use JsonSerializable;
 use Throwable;
 
@@ -336,7 +338,7 @@ final class PropsResolver
                 }
 
                 $prop  = $this->withMergeIntent($prop);
-                $value = $this->resolveValue($prop, $path, $props);
+                $value = $this->resolveValue($prop, $path, $props, false);
             }
 
             $this->collectMetadata($prop, $path);
@@ -453,11 +455,25 @@ final class PropsResolver
      * the result into plain data: a `JsonSerializable` becomes its `jsonSerialize()` value. A
      * string or array that merely names a function stays as it is.
      *
+     * With `Config\Inertia::$strictProps` on, an object other than a `stdClass` data bag or a
+     * backed enum is refused before `jsonSerialize()` runs, and a `stdClass` is refused when
+     * anything inside it is. The refusal is thrown outside the rescue, so a rescuable prop never
+     * hides it. A prop type that resolution produced, such as the one a closure returned, is not
+     * refused as an object: as with the flag off, a `JsonSerializable` one becomes its
+     * `jsonSerialize()` value once, which is checked with the same rule and is not serialized again, and any other is returned as
+     * it is, because the caller unwraps it and resolves it again. A non-callable prop type the
+     * caller gave as it is has no such step and is refused like any other object.
+     *
      * @param array<array-key, mixed> $siblings The props at the same level.
+     *
+     * @throws InvalidArgumentException When strict props refuses the resolved value.
      */
-    private function resolveValue(mixed $value, string $path, array $siblings): mixed
+    private function resolveValue(mixed $value, string $path, array $siblings, bool $mayYieldPropType = true): mixed
     {
         $shouldRescue = $value instanceof Rescuable && $value->shouldRescue();
+        $given        = $value;
+        $refusal      = null;
+        $serialized   = false;
 
         try {
             if (is_object($value) && is_callable($value)) {
@@ -468,7 +484,20 @@ final class PropsResolver
                 $value = $value->toInertiaProperty(new PropertyContext($path, $siblings, $this->request));
             }
 
-            return $value instanceof JsonSerializable ? $value->jsonSerialize() : $value;
+            if ($mayYieldPropType && $value !== $given && $this->isPropType($value)) {
+                if (! $value instanceof JsonSerializable) {
+                    return $value;
+                }
+
+                $value      = $value->jsonSerialize();
+                $serialized = true;
+            }
+
+            $refusal = $this->strictRefusal($value, $path);
+
+            if ($refusal === null) {
+                return $value instanceof JsonSerializable && ! $serialized ? $value->jsonSerialize() : $value;
+            }
         } catch (Throwable $e) {
             if (! $shouldRescue) {
                 throw $e;
@@ -479,6 +508,22 @@ final class PropsResolver
 
             return null;
         }
+
+        throw $refusal;
+    }
+
+    private function strictPropsOn(): bool
+    {
+        return (bool) config('Inertia')->strictProps;
+    }
+
+    private function strictRefusal(mixed $value, string $path): ?InvalidArgumentException
+    {
+        if (! is_object($value) || ! $this->strictPropsOn()) {
+            return null;
+        }
+
+        return StrictPropValue::refusal($value, $path);
     }
 
     /**

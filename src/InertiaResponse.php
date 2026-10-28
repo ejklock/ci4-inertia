@@ -10,6 +10,7 @@ use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\ResponseInterface;
 use Ejklock\Ci4Inertia\Config\Services;
 use Ejklock\Ci4Inertia\Support\Header;
+use Ejklock\Ci4Inertia\Support\StrictPropValue;
 use UnitEnum;
 
 /**
@@ -212,6 +213,10 @@ final class InertiaResponse
         $flash = $this->flashSource()->pullFlashed();
 
         if ($flash !== []) {
+            if (config('Inertia')->strictProps) {
+                StrictPropValue::assert($flash, 'flash', 'flash value');
+            }
+
             $page['flash'] = $this->encodeBigIntegersWhenEnabled($flash);
         }
 

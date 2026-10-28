@@ -6,6 +6,7 @@ namespace Ejklock\Ci4Inertia\Tests;
 
 use ArrayObject;
 use Closure;
+use CodeIgniter\Entity\Entity;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\SiteURI;
 use CodeIgniter\HTTP\UserAgent;
@@ -20,6 +21,7 @@ use DateTimeImmutable;
 use Ejklock\Ci4Inertia\AlwaysProp;
 use Ejklock\Ci4Inertia\DeferProp;
 use Ejklock\Ci4Inertia\Deferrable;
+use Ejklock\Ci4Inertia\IgnoreFirstLoad;
 use Ejklock\Ci4Inertia\Mergeable;
 use Ejklock\Ci4Inertia\MergeProp;
 use Ejklock\Ci4Inertia\OnceProp;
@@ -1714,6 +1716,608 @@ final class PropsResolverTest extends CIUnitTestCase
         $this->assertSame(['mergeProps', 'deferredProps', 'scrollProps', 'onceProps'], $keys);
     }
 
+    public function testStrictPropsRefusesTheEntityAJsonSerializablePropTypeAClosureReturnsSerializesTo(): void
+    {
+        foreach ([[], $this->partial(['X-Inertia-Partial-Data' => 'x'])] as $headers) {
+            $this->assertStrictlyRefused(
+                ['x' => static fn (): object => new StrictPropsSerializableMarker()],
+                'x',
+                Entity::class,
+                $headers,
+            );
+        }
+    }
+
+    public function testStrictPropsRefusesTheEntityAJsonSerializablePropTypeAProviderReturnsSerializesTo(): void
+    {
+        foreach ([[], $this->partial(['X-Inertia-Partial-Data' => 'x'])] as $headers) {
+            $this->assertStrictlyRefused(['x' => new StrictPropsMarkerProvider()], 'x', Entity::class, $headers);
+        }
+    }
+
+    public function testStrictPropsRefusesAJsonSerializablePropTypeGivenAsItIs(): void
+    {
+        $this->assertStrictlyRefused(
+            ['x' => new StrictPropsSerializableMarker()],
+            'x',
+            StrictPropsSerializableMarker::class,
+            $this->partial(['X-Inertia-Partial-Data' => 'x']),
+        );
+    }
+
+    public function testStrictPropsRefusesAnObjectInsideTheResultOfAJsonSerializablePropTypeAtItsInnerPath(): void
+    {
+        $this->assertStrictlyRefused(
+            ['x' => static fn (): object => new StrictPropsNestedSerializableMarker()],
+            'x.inner',
+            Entity::class,
+        );
+    }
+
+    public function testStrictPropsDoesNotLetARescuableDeferredPropHideTheResultOfAJsonSerializablePropType(): void
+    {
+        $this->assertStrictlyRefused(
+            ['x' => new DeferProp(static fn (): object => new StrictPropsSerializableMarker(), 'default', true)],
+            'x',
+            Entity::class,
+            $this->partial(['X-Inertia-Partial-Data' => 'x']),
+        );
+    }
+
+    public function testStrictPropsRefusesAnObjectInsideAPropTypeThatIsNotJsonSerializableAtTheClosurePath(): void
+    {
+        $this->assertStrictlyRefused(
+            ['x' => static fn (): OnceProp => new OnceProp(static fn (): object => new Entity())],
+            'x',
+            Entity::class,
+        );
+    }
+
+    /**
+     * @param Closure(): object     $make
+     * @param array<string, string> $headers
+     */
+    #[DataProvider('provideStrictPropsRendersAJsonSerializablePropTypeAClosureReturnsAsWithTheFlagOff')]
+    public function testStrictPropsRendersAJsonSerializablePropTypeAClosureReturnsAsWithTheFlagOff(Closure $make, array $headers): void
+    {
+        $props = ['x' => $make];
+
+        $this->strictProps(false);
+        $off = $this->renderPage($props, $headers);
+        $this->strictProps();
+        $on = $this->renderPage($props, $headers);
+
+        $this->assertSame(['token' => 'plain'], $off['props']['x']);
+        $this->assertSame($off, $on);
+    }
+
+    /**
+     * @return Generator<string, array{0: Closure(): object, 1: array<string, string>}>
+     */
+    public static function provideStrictPropsRendersAJsonSerializablePropTypeAClosureReturnsAsWithTheFlagOff(): iterable
+    {
+        $partial = ['X-Inertia-Partial-Component' => self::COMPONENT, 'X-Inertia-Partial-Data' => 'x'];
+
+        foreach ([
+            'ignore-first-load' => static fn (): object => new StrictPropsPlainSerializableMarker(),
+            'mergeable'         => static fn (): object => new StrictPropsMergeableSerializable(),
+            'deferrable'        => static fn (): object => new StrictPropsDeferrableSerializable(),
+        ] as $name => $make) {
+            yield $name . ' on a full render' => [$make, []];
+
+            yield $name . ' on a partial reload' => [$make, $partial];
+        }
+    }
+
+    public function testWithStrictPropsOffAJsonSerializablePropTypeAClosureReturnsIsSentAsItsJsonSerializeValue(): void
+    {
+        $this->strictProps(false);
+
+        $page = $this->renderPage(['x' => static fn (): object => new StrictPropsPlainSerializableMarker()]);
+
+        $this->assertSame('{"x":{"token":"plain"}}', json_encode($page['props'], JSON_THROW_ON_ERROR));
+    }
+
+    public function testWithStrictPropsOffAJsonSerializablePropTypeIsSentAsItsJsonSerializeValue(): void
+    {
+        $this->strictProps(false);
+
+        $page = $this->renderPage(
+            ['x' => static fn (): object => new StrictPropsSerializableMarker()],
+            $this->partial(['X-Inertia-Partial-Data' => 'x']),
+        );
+
+        $this->assertSame(['x' => ['token' => 'X']], $page['props']);
+    }
+
+    /**
+     * @param Closure(): object     $make
+     * @param array<string, string> $headers
+     */
+    #[DataProvider('provideWithStrictPropsOffAJsonSerializeResultThatIsJsonSerializableIsSerializedOnce')]
+    public function testWithStrictPropsOffAJsonSerializeResultThatIsJsonSerializableIsSerializedOnce(Closure $make, array $headers, string $expected): void
+    {
+        $this->strictProps(false);
+
+        $page = $this->renderPage(['x' => $make], $headers);
+
+        $this->assertSame($expected, json_encode(['props' => $page['props']], JSON_THROW_ON_ERROR));
+    }
+
+    /**
+     * @return Generator<string, array{0: Closure(): object, 1: array<string, string>, 2: string}>
+     */
+    public static function provideWithStrictPropsOffAJsonSerializeResultThatIsJsonSerializableIsSerializedOnce(): iterable
+    {
+        $partial = ['X-Inertia-Partial-Component' => self::COMPONENT, 'X-Inertia-Partial-Data' => 'x'];
+        $plain   = static fn (): object => new StrictPropsSerializesTo(
+            new StrictPropsPlainData(['a' => static fn (): string => 'resolved']),
+        );
+        $nested = static fn (): object => new StrictPropsSerializesTo(new StrictPropsSerializableMarker());
+        $inner  = static fn (): object => new StrictPropsSerializesTo(
+            new StrictPropsPlainData(['a' => new OptionalProp(static fn (): string => 'opt')]),
+        );
+
+        yield 'a plain data object holding a closure on a full render' => [$plain, [], '{"props":{"x":{"a":[]}}}'];
+
+        yield 'a plain data object holding a closure on a partial reload' => [$plain, $partial, '{"props":{"x":{"a":[]}}}'];
+
+        yield 'a prop type that is left out of a full render' => [$nested, [], '{"props":[]}'];
+
+        yield 'a plain data object holding an optional prop on a full render' => [$inner, [], '{"props":{"x":{"a":[]}}}'];
+
+        yield 'a plain data object holding an optional prop on a partial reload' => [$inner, $partial, '{"props":{"x":{"a":[]}}}'];
+    }
+
+    /**
+     * @param Closure(): mixed $make
+     */
+    #[DataProvider('provideWithStrictPropsOffAJsonSerializableThatIsNotAPropTypeIsSentAsItsJsonSerializeValue')]
+    public function testWithStrictPropsOffAJsonSerializableThatIsNotAPropTypeIsSentAsItsJsonSerializeValue(Closure $make): void
+    {
+        $this->strictProps(false);
+
+        $page = $this->renderPage(['x' => $make()]);
+
+        $this->assertSame('{"x":{"a":"resolved"}}', json_encode($page['props'], JSON_THROW_ON_ERROR));
+    }
+
+    /**
+     * @return Generator<string, array{0: Closure(): mixed}>
+     */
+    public static function provideWithStrictPropsOffAJsonSerializableThatIsNotAPropTypeIsSentAsItsJsonSerializeValue(): iterable
+    {
+        $data = static fn (): object => new StrictPropsPlainData(['a' => static fn (): string => 'resolved']);
+
+        yield 'given directly' => [$data];
+
+        yield 'returned by a closure' => [static fn (): Closure => $data];
+    }
+
+    public function testStrictPropsRefusesAJsonSerializeResultThatIsJsonSerializableAtItsPath(): void
+    {
+        $this->strictProps();
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage(
+            'Inertia prop "x" must hold only null, scalars, arrays, stdClass objects and backed enums that are not JsonSerializable when strictProps is on; '
+            . StrictPropsPlainData::class . ' given.',
+        );
+
+        $this->renderPage(['x' => static fn (): object => new StrictPropsSerializesTo(new StrictPropsPlainData(['a' => 1]))]);
+    }
+
+    public function testStrictPropsRefusesASelfReferencingStdClassAtTheReferencingPath(): void
+    {
+        $bag       = new stdClass();
+        $bag->self = $bag;
+
+        $this->assertStrictlyRefusedAsCycle(['x' => $bag], 'x.self');
+    }
+
+    public function testStrictPropsRefusesAStdClassReferringBackToAnAncestorAtThePathOfTheReference(): void
+    {
+        $bag          = new stdClass();
+        $bag->b       = new stdClass();
+        $bag->b->back = $bag;
+
+        $this->assertStrictlyRefusedAsCycle(['x' => $bag], 'x.b.back');
+    }
+
+    public function testStrictPropsAcceptsTheSameAcyclicStdClassUnderTwoSiblings(): void
+    {
+        $this->strictProps();
+        $shared = (object) ['n' => 1];
+
+        $page = $this->renderPage(['x' => (object) ['a' => $shared, 'b' => $shared]]);
+
+        $this->assertSame(['x' => ['a' => ['n' => 1], 'b' => ['n' => 1]]], $page['props']);
+    }
+
+    public function testWithStrictPropsOffASelfReferencingStdClassIsSentAsTheJsonResponseEncodesIt(): void
+    {
+        $bag       = new stdClass();
+        $bag->self = $bag;
+
+        $page = $this->renderPage(['x' => $bag]);
+
+        $this->assertSame(['x' => ['self' => null]], $page['props']);
+    }
+
+    /**
+     * @param array<array-key, mixed> $props
+     */
+    private function assertStrictlyRefusedAsCycle(array $props, string $path): void
+    {
+        $this->strictProps();
+
+        try {
+            $this->renderPage($props);
+            $this->fail('A stdClass that refers back to an enclosing stdClass must be refused.');
+        } catch (InvalidArgumentException $e) {
+            $this->assertSame(
+                'Inertia prop "' . $path . '" refers back to an enclosing stdClass, which strictProps cannot check.',
+                $e->getMessage(),
+            );
+        }
+    }
+
+    private function strictProps(bool $on = true): void
+    {
+        config('Inertia')->strictProps = $on;
+    }
+
+    /**
+     * @param array<array-key, mixed> $props
+     */
+    private function assertStrictlyRefused(array $props, string $path, string $type, array $headers = []): void
+    {
+        $this->strictProps();
+
+        try {
+            $this->renderPage($props, $headers);
+            $this->fail('A prop that resolves to an object must be refused.');
+        } catch (InvalidArgumentException $e) {
+            $this->assertSame(
+                'Inertia prop "' . $path . '" must hold only null, scalars, arrays, stdClass objects and backed enums that are not JsonSerializable when strictProps is on; ' . $type . ' given.',
+                $e->getMessage(),
+            );
+        }
+    }
+
+    /**
+     * @param array<array-key, mixed> $shared
+     *
+     * @return array<string, mixed>
+     */
+    private function renderSharing(array $shared): array
+    {
+        $request = $this->request();
+        $request->setHeader('X-Inertia', 'true');
+
+        $factory = new ResponseFactory($request, 'app', static fn (): string => 'v1');
+
+        foreach ($shared as $key => $value) {
+            is_int($key) ? $factory->share($value) : $factory->share($key, $value);
+        }
+
+        $response = $factory->render(self::COMPONENT, [])->toResponse($request, service('response', null, false));
+
+        return json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+    }
+
+    public function testStrictPropsAcceptsNullScalarsAndNestedArrays(): void
+    {
+        $this->strictProps();
+        $props = ['n' => null, 't' => true, 'z' => 0, 'f' => 1.5, 's' => '', 'deep' => ['a' => [1, 'x', null, ['b' => false]]]];
+
+        $this->assertSame($props, $this->renderPage($props)['props']);
+    }
+
+    public function testStrictPropsAcceptsABackedEnum(): void
+    {
+        $this->strictProps();
+
+        $this->assertSame(['k' => 'plans'], $this->renderPage(['k' => OnceKeyBacked::Plans])['props']);
+    }
+
+    public function testStrictPropsAcceptsClosuresInvokablesAndProviders(): void
+    {
+        $this->strictProps();
+        $invokable = new class () {
+            public function __invoke(): int
+            {
+                return 7;
+            }
+        };
+
+        $page = $this->renderPage([
+            'closure'   => static fn (): array => ['a' => 1],
+            'invokable' => $invokable,
+            'provider'  => $this->propertyProvider(static fn (): array => ['p' => 2]),
+            $this->propertiesProvider(static fn (): array => ['listed' => 3]),
+        ]);
+
+        $this->assertSame(['closure' => ['a' => 1], 'invokable' => 7, 'provider' => ['p' => 2], 'listed' => 3], $page['props']);
+    }
+
+    public function testStrictPropsAcceptsEveryPackagePropClassWithPlainData(): void
+    {
+        $this->strictProps();
+        $scroll = new ScrollProp(static fn (): array => ['data' => [1]], 'data', new ScrollMetadata('page', null, null, 1));
+
+        $page = $this->renderPage(
+            [
+                'opt'    => new OptionalProp(static fn (): int => 1),
+                'later'  => new DeferProp(static fn (): array => [2]),
+                'always' => new AlwaysProp(static fn (): string => 'a'),
+                'merge'  => new MergeProp([3]),
+                'deep'   => (new MergeProp(['x' => 4]))->deepMerge(),
+                'once'   => new OnceProp(static fn (): int => 5),
+                'feed'   => $scroll,
+            ],
+            $this->partial(['X-Inertia-Partial-Data' => 'opt,later,always,merge,deep,once,feed']),
+        );
+
+        $this->assertSame(
+            ['opt' => 1, 'later' => [2], 'always' => 'a', 'merge' => [3], 'deep' => ['x' => 4], 'once' => 5, 'feed' => ['data' => [1]]],
+            $page['props'],
+        );
+    }
+
+    public function testStrictPropsAcceptsSharedPropsInBothForms(): void
+    {
+        $this->strictProps();
+
+        $page = $this->renderSharing(['auth.user' => ['id' => 1], 'plain' => 'x']);
+
+        $this->assertSame(['auth' => ['user' => ['id' => 1]], 'plain' => 'x'], $page['props']);
+    }
+
+    public function testStrictPropsAcceptsSharedPropsGivenAsAnArray(): void
+    {
+        $this->strictProps();
+
+        $page = $this->renderSharing([['auth.user' => ['id' => 1], 'plain' => 'x']]);
+
+        $this->assertSame(['plain' => 'x', 'auth' => ['user' => ['id' => 1]]], $page['props']);
+    }
+
+    /**
+     * @param array<array-key, mixed> $props
+     */
+    #[DataProvider('provideStrictPropsAcceptsPlainDataBagsAsWithTheFlagOff')]
+    public function testStrictPropsAcceptsPlainDataBagsAsWithTheFlagOff(array $props): void
+    {
+        $off = $this->renderPage($props)['props'];
+
+        $this->strictProps();
+
+        $this->assertSame($off, $this->renderPage($props)['props']);
+    }
+
+    /**
+     * @return iterable<string, array{array<array-key, mixed>}>
+     */
+    public static function provideStrictPropsAcceptsPlainDataBagsAsWithTheFlagOff(): iterable
+    {
+        yield 'a stdClass of scalars' => [['x' => (object) ['a' => 1, 'b' => 'two', 'c' => null]]];
+
+        yield 'a stdClass nested in an array' => [['x' => ['y' => [1, (object) ['a' => [true, 1.5]]]]]];
+
+        yield 'an empty stdClass' => [['x' => new stdClass()]];
+
+        yield 'an empty array' => [['x' => []]];
+
+        yield 'a stdClass a closure returns' => [['x' => static fn (): object => (object) ['a' => 1]]];
+
+        yield 'a stdClass holding a backed enum' => [['x' => (object) ['k' => OnceKeyBacked::Plans]]];
+    }
+
+    public function testStrictPropsRefusesAnEntityInsideAStdClassAtTheInnerPath(): void
+    {
+        $this->assertStrictlyRefused(['x' => (object) ['user' => new Entity(['token' => 's3cr3t-token'])]], 'x.user', Entity::class);
+    }
+
+    public function testStrictPropsRefusesAnObjectInAnArrayInsideAStdClassAtItsDotPath(): void
+    {
+        $this->assertStrictlyRefused(['x' => (object) ['list' => [1, new StrictPropsSecret()]]], 'x.list.1', StrictPropsSecret::class);
+        $this->assertStrictlyRefused(['x' => (object) ['list' => [new Entity()]]], 'x.list.0', Entity::class);
+    }
+
+    public function testStrictPropsRefusesAStdClassSubclassThatIsNotAPlainBag(): void
+    {
+        $this->assertStrictlyRefused(['x' => new StrictPropsSerializableBag()], 'x', StrictPropsSerializableBag::class);
+    }
+
+    public function testStrictPropsRefusesANonCallablePropTypeOnAPartialReload(): void
+    {
+        $this->assertStrictlyRefused(
+            ['x' => new StrictPropsLeakyMarker()],
+            'x',
+            StrictPropsLeakyMarker::class,
+            $this->partial(['X-Inertia-Partial-Data' => 'x']),
+        );
+    }
+
+    public function testStrictPropsRefusesABackedEnumThatIsJsonSerializable(): void
+    {
+        $this->assertStrictlyRefused(['x' => StrictPropsLeakyEnum::A], 'x', StrictPropsLeakyEnum::class);
+    }
+
+    public function testStrictPropsRefusesABackedEnumThatIsJsonSerializableInsideAStdClass(): void
+    {
+        $this->assertStrictlyRefused(['x' => (object) ['e' => StrictPropsLeakyEnum::A]], 'x.e', StrictPropsLeakyEnum::class);
+    }
+
+    public function testWithStrictPropsOffANonCallablePropTypeIsSentAsItsProperties(): void
+    {
+        $page = $this->renderPage(['x' => new StrictPropsLeakyMarker()], $this->partial(['X-Inertia-Partial-Data' => 'x']));
+
+        $this->assertSame(['x' => ['token' => 'LEAKED-SECRET']], $page['props']);
+    }
+
+    public function testStrictPropsRefusesAJsonSerializableAtTheTopLevelWithoutEchoingIt(): void
+    {
+        $this->strictProps();
+
+        try {
+            $this->renderPage(['thing' => new StrictPropsSecret()]);
+            $this->fail('A JsonSerializable must be refused.');
+        } catch (InvalidArgumentException $e) {
+            $this->assertSame(
+                'Inertia prop "thing" must hold only null, scalars, arrays, stdClass objects and backed enums that are not JsonSerializable when strictProps is on; ' . StrictPropsSecret::class . ' given.',
+                $e->getMessage(),
+            );
+            $this->assertStringNotContainsString('s3cr3t-token', $e->getMessage());
+        }
+    }
+
+    public function testStrictPropsRefusesAnEntityNestedAtItsDotPath(): void
+    {
+        $this->assertStrictlyRefused(['auth' => ['user' => new Entity(['token' => 's3cr3t-token'])]], 'auth.user', Entity::class);
+    }
+
+    public function testStrictPropsRefusesAnObjectInsideAList(): void
+    {
+        $this->assertStrictlyRefused(['items' => [1, new Entity()]], 'items.1', Entity::class);
+    }
+
+    public function testStrictPropsRefusesAClosureThatReturnsAnObject(): void
+    {
+        $this->assertStrictlyRefused(['thing' => static fn (): object => new StrictPropsSecret()], 'thing', StrictPropsSecret::class);
+    }
+
+    public function testStrictPropsRefusesAnObjectAClosureReturnsInsideAnArray(): void
+    {
+        $this->assertStrictlyRefused(['a' => static fn (): array => ['b' => new Entity()]], 'a.b', Entity::class);
+    }
+
+    public function testStrictPropsRefusesAnObjectReturnedByAOnceProp(): void
+    {
+        $this->assertStrictlyRefused(['thing' => new OnceProp(static fn (): object => new StrictPropsSecret())], 'thing', StrictPropsSecret::class);
+    }
+
+    public function testStrictPropsRefusesAnObjectReturnedByADeferPropOnItsPartialReload(): void
+    {
+        $this->assertStrictlyRefused(
+            ['later' => new DeferProp(static fn (): object => new StrictPropsSecret())],
+            'later',
+            StrictPropsSecret::class,
+            $this->partial(['X-Inertia-Partial-Data' => 'later']),
+        );
+    }
+
+    public function testStrictPropsRefusesAnObjectInsideAPropTypeAClosureReturned(): void
+    {
+        $this->assertStrictlyRefused(
+            ['thing' => static fn (): OnceProp => new OnceProp(static fn (): object => new StrictPropsSecret())],
+            'thing',
+            StrictPropsSecret::class,
+        );
+    }
+
+    public function testStrictPropsRefusesAPropTypeNestedInsideAPropTypeAClosureReturned(): void
+    {
+        $this->assertStrictlyRefused(
+            ['thing' => static fn (): OnceProp => new OnceProp(static fn (): OptionalProp => new OptionalProp(static fn (): int => 1))],
+            'thing',
+            OptionalProp::class,
+        );
+    }
+
+    public function testStrictPropsDoesNotLetARescuableDeferredPropHideAnObject(): void
+    {
+        $this->assertStrictlyRefused(
+            ['stats' => new DeferProp(static fn (): object => new StrictPropsSecret(), 'default', true)],
+            'stats',
+            StrictPropsSecret::class,
+            $this->partial(['X-Inertia-Partial-Data' => 'stats']),
+        );
+    }
+
+    public function testStrictPropsStillRescuesAThrowFromARescuableDeferredProp(): void
+    {
+        $this->strictProps();
+
+        $page = $this->renderPage(['stats' => $this->rescuingThrow('boom-strict')], $this->partial(['X-Inertia-Partial-Data' => 'stats']));
+
+        $this->assertSame(['stats'], $page['rescuedProps']);
+    }
+
+    public function testStrictPropsRefusesAUnitEnum(): void
+    {
+        $this->assertStrictlyRefused(['k' => OnceKeyPure::Pure], 'k', OnceKeyPure::class);
+    }
+
+    public function testStrictPropsRefusesAnObjectSharedAtADottedKey(): void
+    {
+        $this->strictProps();
+
+        try {
+            $this->renderSharing(['auth.user' => new StrictPropsSecret()]);
+            $this->fail('A shared object must be refused.');
+        } catch (InvalidArgumentException $e) {
+            $this->assertStringContainsString('Inertia prop "auth.user" must hold only', $e->getMessage());
+        }
+    }
+
+    public function testStrictPropsRefusesAnObjectSharedUnderAPlainKey(): void
+    {
+        $this->strictProps();
+
+        try {
+            $this->renderSharing([['user' => new Entity()]]);
+            $this->fail('A shared object must be refused.');
+        } catch (InvalidArgumentException $e) {
+            $this->assertStringContainsString('Inertia prop "user" must hold only', $e->getMessage());
+        }
+    }
+
+    public function testStrictPropsNeverChecksADeferredPropLeftOutOfTheFirstLoad(): void
+    {
+        $this->strictProps();
+
+        $page = $this->renderPage(['later' => new DeferProp(static fn (): object => new StrictPropsSecret()), 'ok' => 1]);
+
+        $this->assertSame(['ok' => 1], $page['props']);
+        $this->assertSame(['default' => ['later']], $page['deferredProps']);
+    }
+
+    public function testStrictPropsNeverChecksAPropAPartialReloadLeavesOut(): void
+    {
+        $this->strictProps();
+
+        $page = $this->renderPage(['bad' => new StrictPropsSecret(), 'ok' => 1], $this->partial(['X-Inertia-Partial-Data' => 'ok']));
+
+        $this->assertSame(['ok' => 1], $page['props']);
+    }
+
+    public function testWithStrictPropsOffAJsonSerializableIsSentAsItsJsonSerializeValue(): void
+    {
+        $page = $this->renderPage(['thing' => new StrictPropsSecret()]);
+
+        $this->assertSame(['thing' => ['token' => 's3cr3t-token']], $page['props']);
+    }
+
+    public function testWithStrictPropsOffANestedEntityIsSentAsItsAttributes(): void
+    {
+        $page = $this->renderPage(['auth' => ['user' => new Entity(['token' => 'abc'])]]);
+
+        $this->assertSame(['auth' => ['user' => ['token' => 'abc']]], $page['props']);
+    }
+
+    public function testWithStrictPropsOffEveryObjectInputRendersWithoutAnException(): void
+    {
+        $page = $this->renderPage([
+            'list'    => [1, new stdClass()],
+            'closure' => static fn (): object => new stdClass(),
+            'once'    => new OnceProp(static fn (): object => new stdClass()),
+        ]);
+
+        $this->assertSame(['list' => [1, []], 'closure' => [], 'once' => []], $page['props']);
+    }
+
     private function request(): IncomingRequest
     {
         $config = config(AppConfig::class);
@@ -1725,6 +2329,7 @@ final class PropsResolverTest extends CIUnitTestCase
     {
         Time::setTestNow();
         Services::resetSingle('pager');
+        config('Inertia')->strictProps = false;
         parent::tearDown();
     }
 }
@@ -1742,4 +2347,188 @@ enum OnceKeyInt: int
 enum OnceKeyPure
 {
     case Pure;
+}
+
+final class StrictPropsLeakyMarker implements IgnoreFirstLoad
+{
+    public string $token = 'LEAKED-SECRET';
+}
+
+enum StrictPropsLeakyEnum: string implements JsonSerializable
+{
+    case A = 'a';
+
+    public function jsonSerialize(): object
+    {
+        return (object) ['token' => 'ENUM-LEAK'];
+    }
+}
+
+final class StrictPropsSerializableMarker implements IgnoreFirstLoad, JsonSerializable
+{
+    public function jsonSerialize(): mixed
+    {
+        return new Entity(['token' => 'X']);
+    }
+}
+
+final class StrictPropsPlainSerializableMarker implements IgnoreFirstLoad, JsonSerializable
+{
+    /**
+     * @return array<string, string>
+     */
+    public function __invoke(): array
+    {
+        return $this->jsonSerialize();
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public function jsonSerialize(): array
+    {
+        return ['token' => 'plain'];
+    }
+}
+
+final readonly class StrictPropsSerializesTo implements IgnoreFirstLoad, JsonSerializable
+{
+    public function __construct(private JsonSerializable $result)
+    {
+    }
+
+    public function jsonSerialize(): JsonSerializable
+    {
+        return $this->result;
+    }
+}
+
+final readonly class StrictPropsPlainData implements JsonSerializable
+{
+    /**
+     * @param array<string, mixed> $data
+     */
+    public function __construct(private array $data)
+    {
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function jsonSerialize(): array
+    {
+        return $this->data;
+    }
+}
+
+final class StrictPropsNestedSerializableMarker implements IgnoreFirstLoad, JsonSerializable
+{
+    /**
+     * @return array<string, Entity>
+     */
+    public function jsonSerialize(): array
+    {
+        return ['inner' => new Entity()];
+    }
+}
+
+final class StrictPropsMergeableSerializable implements JsonSerializable, Mergeable
+{
+    public function merge(): static
+    {
+        return $this;
+    }
+
+    public function shouldMerge(): bool
+    {
+        return true;
+    }
+
+    public function shouldDeepMerge(): bool
+    {
+        return false;
+    }
+
+    public function matchesOn(): array
+    {
+        return [];
+    }
+
+    public function appendsAtRoot(): bool
+    {
+        return true;
+    }
+
+    public function prependsAtRoot(): bool
+    {
+        return false;
+    }
+
+    public function appendsAtPaths(): array
+    {
+        return [];
+    }
+
+    public function prependsAtPaths(): array
+    {
+        return [];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public function jsonSerialize(): array
+    {
+        return ['token' => 'plain'];
+    }
+}
+
+final class StrictPropsDeferrableSerializable implements Deferrable, JsonSerializable
+{
+    public function shouldDefer(): bool
+    {
+        return true;
+    }
+
+    public function group(): string
+    {
+        return 'default';
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public function jsonSerialize(): array
+    {
+        return ['token' => 'plain'];
+    }
+}
+
+final class StrictPropsMarkerProvider implements ProvidesInertiaProperty
+{
+    public function toInertiaProperty(PropertyContext $prop): mixed
+    {
+        return new StrictPropsSerializableMarker();
+    }
+}
+
+final class StrictPropsSerializableBag extends stdClass implements JsonSerializable
+{
+    public function jsonSerialize(): object
+    {
+        return (object) ['token' => 'BAG-LEAK'];
+    }
+}
+
+final class StrictPropsSecret implements JsonSerializable
+{
+    public string $token = 's3cr3t-token';
+
+    /**
+     * @return array<string, string>
+     */
+    public function jsonSerialize(): array
+    {
+        return ['token' => $this->token];
+    }
 }

@@ -11,3 +11,4 @@
 * [0007 — Refuse non-http hot URLs and skip SSR for oversized queries](0007-refuse-non-http-hot-urls-and-skip-ssr-for-oversized-queries.md) - Accepted
 * [0008 — Bound inertia:stop-ssr with a 2 s connect and 5 s total timeout](0008-bound-inertia-stop-ssr-with-a-2-s-connect-and-5-s-total-timeout.md) - Accepted
 * [0009 — Require symfony/process for inertia:start-ssr](0009-require-symfony-process-for-inertia-start-ssr.md) - Accepted
+* [0010 — Add an opt-in strictProps check on props and flash data](0010-add-an-opt-in-strictprops-check-on-props-and-flash-data.md) - Accepted

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Ejklock\Ci4Inertia\Tests;
 
+use CodeIgniter\Entity\Entity;
 use CodeIgniter\Format\Exceptions\FormatException;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\ResponseInterface;
@@ -1381,6 +1382,87 @@ final class InertiaResponseTest extends CIUnitTestCase
         $page = $this->pageOf($factory->render('Users/Index', [])->preserveBigIntegers());
 
         $this->assertSame(['total' => ['$bigint' => (string) PHP_INT_MAX]], $page['flash']);
+    }
+
+    protected function tearDown(): void
+    {
+        config('Inertia')->strictProps = false;
+        parent::tearDown();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function flashedPage(string $key, mixed $value, bool $strictProps): array
+    {
+        $this->mockSession();
+        config('Inertia')->strictProps = $strictProps;
+
+        $factory = new ResponseFactory($this->makeRequest(), self::SHELL_VIEW, static fn (): string => 'v1');
+        $factory->flash($key, $value);
+
+        return $this->pageOf($factory->render('Users/Index', []));
+    }
+
+    #[DataProvider('provideStrictPropsAcceptsFlashOfPlainDataAsWithTheFlagOff')]
+    public function testStrictPropsAcceptsFlashOfPlainDataAsWithTheFlagOff(mixed $value): void
+    {
+        $off = $this->flashedPage('k', $value, false)['flash'];
+        $on  = $this->flashedPage('k', $value, true)['flash'];
+
+        $this->assertSame($off, $on);
+    }
+
+    /**
+     * @return iterable<string, array{mixed}>
+     */
+    public static function provideStrictPropsAcceptsFlashOfPlainDataAsWithTheFlagOff(): iterable
+    {
+        yield 'a scalar' => ['Saved'];
+
+        yield 'an array' => [['a' => [1, 2], 'b' => null]];
+
+        yield 'a stdClass of scalars' => [(object) ['a' => 1, 'b' => 'two']];
+    }
+
+    public function testStrictPropsRefusesFlashOfAnEntityAtItsKey(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Inertia flash value "flash.user" must hold only null, scalars, arrays, stdClass objects and backed enums that are not JsonSerializable when strictProps is on; ' . Entity::class . ' given.');
+
+        $this->flashedPage('user', new Entity(['token' => 's3cr3t-token']), true);
+    }
+
+    public function testStrictPropsRefusesAFlashStdClassThatRefersToItselfAtItsFlashPath(): void
+    {
+        $bag       = new stdClass();
+        $bag->self = $bag;
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Inertia flash value "flash.data.self" refers back to an enclosing stdClass, which strictProps cannot check.');
+
+        $this->flashedPage('data', $bag, true);
+    }
+
+    public function testStrictPropsRefusesAnObjectNestedInFlashDataAtItsDotPath(): void
+    {
+        try {
+            $this->flashedPage('data', [new Entity(['token' => 's3cr3t-token'])], true);
+            $this->fail('A nested flash object must be refused.');
+        } catch (InvalidArgumentException $e) {
+            $this->assertSame(
+                'Inertia flash value "flash.data.0" must hold only null, scalars, arrays, stdClass objects and backed enums that are not JsonSerializable when strictProps is on; ' . Entity::class . ' given.',
+                $e->getMessage(),
+            );
+            $this->assertStringNotContainsString('s3cr3t-token', $e->getMessage());
+        }
+    }
+
+    public function testWithStrictPropsOffFlashOfAnEntityRendersAsItsAttributes(): void
+    {
+        $page = $this->flashedPage('user', new Entity(['token' => 'abc']), false);
+
+        $this->assertSame(['user' => ['token' => 'abc']], $page['flash']);
     }
 
     public function testThePreserveFlagComesRightAfterTheMetadataAndBeforeClearHistory(): void

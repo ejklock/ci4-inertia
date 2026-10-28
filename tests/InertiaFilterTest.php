@@ -19,7 +19,10 @@ use CodeIgniter\Test\TestResponse;
 use Config\App as AppConfig;
 use Ejklock\Ci4Inertia\AlwaysProp;
 use Ejklock\Ci4Inertia\Config\Inertia as InertiaConfig;
+use Ejklock\Ci4Inertia\ExceptionResponse;
 use Ejklock\Ci4Inertia\Filters\InertiaFilter;
+use Ejklock\Ci4Inertia\Inertia;
+use Ejklock\Ci4Inertia\InertiaExceptionHandler;
 use Ejklock\Ci4Inertia\ResponseFactory;
 use Ejklock\Ci4Inertia\Ssr\BundleDetector;
 use Ejklock\Ci4Inertia\Ssr\Gateway;
@@ -28,6 +31,7 @@ use Ejklock\Ci4Inertia\Ssr\Response;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\DataProviderExternal;
+use RuntimeException;
 use stdClass;
 
 /**
@@ -93,6 +97,7 @@ final class InertiaFilterTest extends CIUnitTestCase
         $inertia->version          = $this->originalVersion;
         $inertia->rootView         = $this->originalRootView;
         $inertia->storePreviousUrl = true;
+        $inertia->strictProps      = false;
         $superglobals              = service('superglobals');
         $superglobals->setCookieArray([]);
         $superglobals->setServerArray($this->serverBefore);
@@ -1302,6 +1307,83 @@ final class InertiaFilterTest extends CIUnitTestCase
         $page = json_decode((string) $result->response()->getBody(), true, flags: JSON_THROW_ON_ERROR);
 
         $this->assertSame(['subject' => 'Subject is required.'], $page['props']['errors']);
+    }
+
+    /**
+     * @param array<string, mixed> $session
+     */
+    private function pageBodyThroughTheFilter(bool $strictProps, array $session): string
+    {
+        $this->resetPerRequestServices();
+        config('Inertia')->strictProps = $strictProps;
+        $this->withRoutes([$this->renderingRoute()]);
+
+        $result = $this->withSession($session)
+            ->withHeaders(['X-Inertia' => 'true', 'X-Inertia-Version' => self::CURRENT_VERSION])
+            ->get('/page');
+
+        $result->assertStatus(200);
+
+        return (string) $result->response()->getBody();
+    }
+
+    /**
+     * @param array<string, mixed> $session
+     */
+    #[DataProvider('provideAPageBehindTheFilterRendersWithStrictPropsOnAsWithItOff')]
+    public function testAPageBehindTheFilterRendersWithStrictPropsOnAsWithItOff(array $session, string $expectedErrors): void
+    {
+        $off = $this->pageBodyThroughTheFilter(false, $session);
+        $on  = $this->pageBodyThroughTheFilter(true, $session);
+
+        $this->assertSame($off, $on);
+        $this->assertSame($expectedErrors, json_encode(json_decode($on, flags: JSON_THROW_ON_ERROR)->props->errors, JSON_THROW_ON_ERROR));
+    }
+
+    /**
+     * @return iterable<string, array{array<string, mixed>, string}>
+     */
+    public static function provideAPageBehindTheFilterRendersWithStrictPropsOnAsWithItOff(): iterable
+    {
+        yield 'no validation errors' => [[], '{}'];
+
+        yield 'validation errors' => [['errors' => ['subject' => 'Subject is required.']], '{"subject":"Subject is required."}'];
+    }
+
+    private function exceptionPageBody(bool $strictProps): string
+    {
+        $this->resetPerRequestServices();
+        config('Inertia')->strictProps = $strictProps;
+        Inertia::handleExceptionsUsing(
+            static fn (ExceptionResponse $r) => $r->render('Errors/Show', ['status' => $r->statusCode()])->withSharedData(),
+        );
+
+        $response = service('response', null, false);
+        $handler  = new InertiaExceptionHandler(config('Exceptions'));
+
+        ob_start();
+
+        try {
+            $handler->handle(new RuntimeException('Something broke.'), $this->inertiaGetRequest(), $response, 500, 1);
+        } finally {
+            ob_end_clean();
+        }
+
+        return (string) $response->getBody();
+    }
+
+    public function testAnExceptionPageSharingTheFiltersPropsRendersWithStrictPropsOnAsWithItOff(): void
+    {
+        try {
+            $off = $this->exceptionPageBody(false);
+            $on  = $this->exceptionPageBody(true);
+        } finally {
+            InertiaExceptionHandler::respondUsing(null);
+        }
+
+        $this->assertSame($off, $on);
+        $this->assertStringContainsString('"errors": {}', $on);
+        $this->assertSame('{}', json_encode(json_decode($on, flags: JSON_THROW_ON_ERROR)->props->errors, JSON_THROW_ON_ERROR));
     }
 
     public function testErrorsPropIsForceIncludedOnAPartialReloadThatDoesNotRequestIt(): void
