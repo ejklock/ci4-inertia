@@ -6,7 +6,9 @@ namespace Ejklock\Ci4Inertia\Tests;
 
 use ArrayObject;
 use Closure;
+use CodeIgniter\Config\Factories;
 use CodeIgniter\Entity\Entity;
+use CodeIgniter\Format\Exceptions\FormatException;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\SiteURI;
 use CodeIgniter\HTTP\UserAgent;
@@ -15,6 +17,7 @@ use CodeIgniter\Pager\Exceptions\PagerException;
 use CodeIgniter\Test\CIUnitTestCase;
 use CodeIgniter\Test\TestLogger;
 use Config\App as AppConfig;
+use Config\Format;
 use Config\Services;
 use DateInterval;
 use DateTimeImmutable;
@@ -35,6 +38,7 @@ use Ejklock\Ci4Inertia\Rescuable;
 use Ejklock\Ci4Inertia\ResponseFactory;
 use Ejklock\Ci4Inertia\ScrollMetadata;
 use Ejklock\Ci4Inertia\ScrollProp;
+use Ejklock\Ci4Inertia\Support\StrictPropValue;
 use Exception;
 use Generator;
 use InvalidArgumentException;
@@ -73,7 +77,7 @@ final class PropsResolverTest extends CIUnitTestCase
         $factory  = new ResponseFactory($request, 'app', static fn (): string => 'v1');
         $response = $factory->render(self::COMPONENT, $props)->toResponse($request, service('response', null, false));
 
-        return json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+        return json_decode((string) $response->getBody(), true, 2048, JSON_THROW_ON_ERROR);
     }
 
     /**
@@ -1942,6 +1946,234 @@ final class PropsResolverTest extends CIUnitTestCase
         $page = $this->renderPage(['x' => $bag]);
 
         $this->assertSame(['x' => ['self' => null]], $page['props']);
+    }
+
+    public function testStrictPropsRefusesAnArrayThatHoldsItselfThroughAReference(): void
+    {
+        $a         = ['x' => 1];
+        $a['self'] = &$a;
+
+        $this->assertStrictlyRefusedAsTooDeep(['a' => $a], 'a', 512);
+    }
+
+    public function testStrictPropsRefusesAnArrayThatHoldsItselfAClosureReturns(): void
+    {
+        $a         = ['x' => 1];
+        $a['self'] = &$a;
+
+        $this->assertStrictlyRefusedAsTooDeep(['a' => static fn (): array => $a], 'a', 512);
+    }
+
+    public function testStrictPropsRefusesAnArrayNestedOneLevelBeyondTheJsonEncodeDepth(): void
+    {
+        $this->assertStrictlyRefusedAsTooDeep(['deep' => self::nestedArray(513)], 'deep', 512);
+    }
+
+    public function testStrictPropsPassesArraysNestedAtAndBelowTheJsonEncodeDepth(): void
+    {
+        foreach ([511, 512] as $levels) {
+            $this->assertNull(StrictPropValue::refusal(self::nestedArray($levels), 'deep'));
+        }
+
+        $this->assertSame(
+            'Inertia prop "deep" nests deeper than 512 levels when strictProps is on.',
+            StrictPropValue::refusal(self::nestedArray(513), 'deep')?->getMessage(),
+        );
+    }
+
+    public function testStrictPropsRefusesAStdClassNestedBeyondTheJsonEncodeDepthAtItsStartingPath(): void
+    {
+        $value = new stdClass();
+
+        for ($i = 1; $i < 513; $i++) {
+            $outer       = new stdClass();
+            $outer->next = $value;
+            $value       = $outer;
+        }
+
+        $this->assertStrictlyRefusedAsTooDeep(['deep' => $value], 'deep', 512);
+    }
+
+    public function testStrictPropsStillNamesAStdClassThatHoldsItselfAtItsOwnPath(): void
+    {
+        $bag       = new stdClass();
+        $bag->self = $bag;
+
+        $this->assertStrictlyRefusedAsCycle(['x' => $bag], 'x.self');
+    }
+
+    public function testStrictPropsCarriesAnArrayAtARaisedJsonEncodeDepthInTheXInertiaBody(): void
+    {
+        $this->withJsonEncodeDepth(700, function (): void {
+            $this->strictProps();
+
+            $page = $this->renderPage(['deep' => self::nestedArray(600)]);
+
+            $this->assertSame(self::nestedArray(600), $page['props']['deep']);
+        });
+    }
+
+    public function testStrictPropsRefusesAnArrayBeyondARaisedJsonEncodeDepthNamingIt(): void
+    {
+        $this->withJsonEncodeDepth(700, function (): void {
+            $this->assertStrictlyRefusedAsTooDeep(['deep' => self::nestedArray(701)], 'deep', 700);
+        });
+    }
+
+    public function testStrictPropsRefusesAnArrayBeyondALoweredJsonEncodeDepthNamingIt(): void
+    {
+        $this->withJsonEncodeDepth(8, function (): void {
+            $this->assertStrictlyRefusedAsTooDeep(['deep' => self::nestedArray(9)], 'deep', 8);
+        });
+    }
+
+    public function testStrictPropsRefusesAnArrayThatHoldsItselfNamingALoweredJsonEncodeDepth(): void
+    {
+        $this->withJsonEncodeDepth(8, function (): void {
+            $a         = ['x' => 1];
+            $a['self'] = &$a;
+
+            $this->assertStrictlyRefusedAsTooDeep(['a' => $a], 'a', 8);
+        });
+    }
+
+    public function testStrictPropsRefusesAnArrayThatHoldsItselfUnderADottedKeyNamingTheFirstSegment(): void
+    {
+        $a         = ['x' => 1];
+        $a['self'] = &$a;
+
+        $this->assertStrictlyRefusedAsTooDeep(['a.b' => $a], 'a', 512);
+    }
+
+    public function testStrictPropsRefusesAnArrayThatHoldsItselfInsideAStdClassPropNamingTheTopLevelKey(): void
+    {
+        $a         = ['x' => 1];
+        $a['self'] = &$a;
+        $bag       = new stdClass();
+        $bag->data = $a;
+
+        $this->assertStrictlyRefusedAsTooDeep(['bag' => $bag], 'bag', 512);
+    }
+
+    public function testStrictPropsCountsAStdClassFoundInAnArrayPropFromTheTopOfTheProp(): void
+    {
+        $this->assertStrictlyRefusedAsTooDeep(['deep' => self::arrayHoldingStdClassAtLevel300(214)], 'deep', 512);
+    }
+
+    public function testStrictPropsPassesAStdClassFoundInAnArrayPropWhenItEndsAtTheJsonEncodeDepth(): void
+    {
+        $this->strictProps();
+
+        $this->expectException(FormatException::class);
+
+        $this->renderPage(['deep' => self::arrayHoldingStdClassAtLevel300(213)]);
+    }
+
+    public function testStrictPropsRefusesAnArrayThatHoldsItselfARescuableDeferredPropReturns(): void
+    {
+        $a         = ['x' => 1];
+        $a['self'] = &$a;
+
+        $this->assertStrictlyRefusedAsTooDeep(
+            ['a' => new DeferProp(static fn (): array => $a, 'default', true)],
+            'a',
+            512,
+            $this->partial(['X-Inertia-Partial-Data' => 'a']),
+        );
+    }
+
+    public function testStrictPropsLetsAnArrayAtTheJsonEncodeDepthPastTheCheckToFailAtEncode(): void
+    {
+        $this->strictProps();
+
+        $this->expectException(FormatException::class);
+
+        $this->renderPage(['deep' => self::nestedArray(512)]);
+    }
+
+    public function testJsonEncodeDepthOverrideIsGoneAfterTheHelperRuns(): void
+    {
+        $this->withJsonEncodeDepth(600, function (): void {
+            $this->assertSame(600, config(Format::class)->jsonEncodeDepth);
+        });
+
+        $this->assertSame(512, config(Format::class)->jsonEncodeDepth);
+        $this->assertArrayNotHasKey('format.jsonEncodeDepth', $_SERVER);
+    }
+
+    /**
+     * @param array<array-key, mixed> $props
+     */
+    private function assertStrictlyRefusedAsTooDeep(array $props, string $path, int $limit, array $headers = []): void
+    {
+        $this->strictProps();
+
+        try {
+            $this->renderPage($props, $headers);
+            $this->fail('A prop nested beyond the JSON encode depth must be refused.');
+        } catch (InvalidArgumentException $e) {
+            $this->assertSame(
+                'Inertia prop "' . $path . '" nests deeper than ' . $limit . ' levels when strictProps is on.',
+                $e->getMessage(),
+            );
+        }
+    }
+
+    private function withJsonEncodeDepth(int $depth, callable $test): void
+    {
+        $key      = 'format.jsonEncodeDepth';
+        $existed  = array_key_exists($key, $_SERVER);
+        $original = $_SERVER[$key] ?? null; // @phpstan-ignore codeigniter.superglobalAccess (config reads live $_SERVER, not the snapshot service)
+
+        $_SERVER[$key] = (string) $depth; // @phpstan-ignore codeigniter.superglobalAccessAssign (config reads live $_SERVER, not the snapshot service)
+        Factories::reset('config');
+
+        try {
+            $test();
+        } finally {
+            if ($existed) {
+                $_SERVER[$key] = $original; // @phpstan-ignore codeigniter.superglobalAccessAssign (restores the live $_SERVER)
+            } else {
+                unset($_SERVER[$key]); // @phpstan-ignore codeigniter.superglobalAccess (restores the live $_SERVER)
+            }
+            Factories::reset('config');
+        }
+    }
+
+    /**
+     * @return array<int, mixed> An array whose 300th level is the outermost of a chain of the given number of stdClass objects.
+     */
+    private static function arrayHoldingStdClassAtLevel300(int $stdClassLevels): array
+    {
+        $bag = new stdClass();
+
+        for ($i = 1; $i < $stdClassLevels; $i++) {
+            $outer       = new stdClass();
+            $outer->next = $bag;
+            $bag         = $outer;
+        }
+
+        $value = [$bag];
+
+        for ($i = 2; $i < 300; $i++) {
+            $value = [$value];
+        }
+
+        return $value;
+    }
+
+    /**
+     * @return array<int, mixed> The given number of arrays, each holding the next, the innermost empty.
+     */
+    private static function nestedArray(int $levels): array
+    {
+        $value = [];
+
+        for ($i = 1; $i < $levels; $i++) {
+            $value = [$value];
+        }
+
+        return $value;
     }
 
     /**

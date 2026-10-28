@@ -44,7 +44,10 @@ class Inertia extends BaseConfig
      * `get_debug_type()`, never the value. A `JsonSerializable` prop type that a closure or a
      * `ProvidesInertiaProperty` returns is sent as its `jsonSerialize()` value, as with the flag
      * off, and that value is checked with the same rule; a non-callable prop type given as it
-     * is gets refused. A `stdClass` that refers back to an enclosing `stdClass` is refused at its path.
+     * is gets refused. A `stdClass` that refers back to an enclosing `stdClass` is refused at its path,
+     * and so is a value that nests arrays and `stdClass` objects deeper than
+     * `Config\Format::$jsonEncodeDepth`, which includes an array that holds itself through a
+     * reference; that message names the top-level key, or `flash`.
      * The check runs when the response is built, not when `render()` or `share()` is called, and
      * the refusal is thrown outside the rescue, so a rescuable deferred prop never hides it.
      * Defaults to off, as inertia-laravel has no such option; with it off the output is the same

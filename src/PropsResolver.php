@@ -6,6 +6,7 @@ namespace Ejklock\Ci4Inertia;
 
 use Closure;
 use CodeIgniter\HTTP\IncomingRequest;
+use Config\Format;
 use Ejklock\Ci4Inertia\Support\Header;
 use Ejklock\Ci4Inertia\Support\StrictPropValue;
 use InvalidArgumentException;
@@ -57,6 +58,11 @@ final class PropsResolver
      * @var list<string>
      */
     private array $matchPropsOn = [];
+
+    /**
+     * The deepest level an array prop may sit at, or null while `strictProps` is off.
+     */
+    private ?int $depthLimit = null;
 
     /**
      * @var array<string, list<string>>
@@ -124,6 +130,8 @@ final class PropsResolver
     public function resolve(array $shared, array $props): array
     {
         $props = array_replace($this->resolveSharedProps($shared), $props);
+
+        $this->depthLimit = $this->strictPropsOn() ? config(Format::class)->jsonEncodeDepth : null;
 
         return [$this->resolveProps($this->unpackDotProps($props)), $this->buildMetadata()];
     }
@@ -300,7 +308,7 @@ final class PropsResolver
      *
      * @return array<array-key, mixed>
      */
-    private function resolveProps(array $props, string $prefix = '', bool $parentWasResolved = false): array
+    private function resolveProps(array $props, string $prefix = '', bool $parentWasResolved = false, int $level = 1): array
     {
         $props  = $this->resolvePropertyProviders($props);
         $result = [];
@@ -322,7 +330,7 @@ final class PropsResolver
             }
 
             $prop  = $this->withMergeIntent($prop);
-            $value = $this->resolveValue($prop, $path, $props);
+            $value = $this->resolveValue($prop, $path, $props, $level);
 
             if (in_array($path, $this->rescuedProps, true)) {
                 continue;
@@ -338,15 +346,19 @@ final class PropsResolver
                 }
 
                 $prop  = $this->withMergeIntent($prop);
-                $value = $this->resolveValue($prop, $path, $props, false);
+                $value = $this->resolveValue($prop, $path, $props, $level, false);
             }
 
             $this->collectMetadata($prop, $path);
 
+            if (is_array($value) && $this->depthLimit !== null && $level > $this->depthLimit) {
+                throw StrictPropValue::tooDeep($path, $this->depthLimit);
+            }
+
             // The children of a value that was not an array before resolving, such as a closure's
             // result, bypass the partial filter: the closure's key was already matched.
             $result[$key] = is_array($value)
-                ? $this->resolveProps($value, $path, $parentWasResolved || ! is_array($prop))
+                ? $this->resolveProps($value, $path, $parentWasResolved || ! is_array($prop), $level + 1)
                 : $value;
         }
 
@@ -465,10 +477,11 @@ final class PropsResolver
      * caller gave as it is has no such step and is refused like any other object.
      *
      * @param array<array-key, mixed> $siblings The props at the same level.
+     * @param int                     $level    The level the value sits at, the top of a prop being level 1.
      *
      * @throws InvalidArgumentException When strict props refuses the resolved value.
      */
-    private function resolveValue(mixed $value, string $path, array $siblings, bool $mayYieldPropType = true): mixed
+    private function resolveValue(mixed $value, string $path, array $siblings, int $level, bool $mayYieldPropType = true): mixed
     {
         $shouldRescue = $value instanceof Rescuable && $value->shouldRescue();
         $given        = $value;
@@ -493,7 +506,7 @@ final class PropsResolver
                 $serialized = true;
             }
 
-            $refusal = $this->strictRefusal($value, $path);
+            $refusal = $this->strictRefusal($value, $path, $level);
 
             if ($refusal === null) {
                 return $value instanceof JsonSerializable && ! $serialized ? $value->jsonSerialize() : $value;
@@ -517,13 +530,13 @@ final class PropsResolver
         return (bool) config('Inertia')->strictProps;
     }
 
-    private function strictRefusal(mixed $value, string $path): ?InvalidArgumentException
+    private function strictRefusal(mixed $value, string $path, int $level): ?InvalidArgumentException
     {
         if (! is_object($value) || ! $this->strictPropsOn()) {
             return null;
         }
 
-        return StrictPropValue::refusal($value, $path);
+        return StrictPropValue::refusal($value, $path, 'prop', $level);
     }
 
     /**

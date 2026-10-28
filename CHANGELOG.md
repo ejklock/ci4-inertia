@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- With `Config\Inertia::$strictProps` on, a prop or flash value that nests arrays and `stdClass` objects deeper than `Config\Format::$jsonEncodeDepth` (512 by default), the depth the JSON response encodes at, is refused with `InvalidArgumentException` instead of exhausting memory, and so is an array that holds itself through a PHP reference. The message names the prop's top-level key, or `flash`, and never a value. With the flag off nothing changes.
+
 ## [3.1.0] - 2026-10-28
 
 ### Added

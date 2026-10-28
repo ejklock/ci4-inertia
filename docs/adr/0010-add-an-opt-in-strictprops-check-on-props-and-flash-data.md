@@ -15,14 +15,14 @@ The request came on 2026-10-28 as a handoff from another project, `abby-support-
 
 ## Decision
 
-We will add `Config\Inertia::$strictProps`, an opt-in option that is `false` by default (`src/Config/Inertia.php:53`). With it off, the output is the same as in 3.0.0. The owner decided on 2026-10-28:
+We will add `Config\Inertia::$strictProps`, an opt-in option that is `false` by default (`src/Config/Inertia.php:56`). With it off, the output is the same as in 3.0.0. The owner decided on 2026-10-28:
 
-- **A deep check at resolution, not at call time.** The check runs when the response is built, on the resolved props (`src/PropsResolver.php:471-513`) and on the flash data (`src/InertiaResponse.php:216-217`), at any depth. It does not run in `render()` or `share()`.
-- **Accept `stdClass` and check its properties.** The allowed values are null, scalars, arrays, a plain `stdClass` (the exact class, checked inside like an array) and a backed enum that is not `JsonSerializable` (`src/Support/StrictPropValue.php:48-86`). Anything else is refused with `InvalidArgumentException`, which names the dot path and `get_debug_type()`, never the value. A `stdClass` that refers back to an enclosing `stdClass` is refused at its path.
+- **A deep check at resolution, not at call time.** The check runs when the response is built, on the resolved props (`src/PropsResolver.php:484-526`) and on the flash data (`src/InertiaResponse.php:216-217`), at any depth. It does not run in `render()` or `share()`.
+- **Accept `stdClass` and check its properties.** The allowed values are null, scalars, arrays, a plain `stdClass` (the exact class, checked inside like an array) and a backed enum that is not `JsonSerializable` (`src/Support/StrictPropValue.php:74-118`). Anything else is refused with `InvalidArgumentException`, which names the dot path and `get_debug_type()`, never the value. A `stdClass` that refers back to an enclosing `stdClass` is refused at its path. A value that nests arrays and `stdClass` objects deeper than `Config\Format::$jsonEncodeDepth`, the depth the JSON response encodes at, is refused too, which ends the walk for an array that holds itself through a reference; the message names the top-level key, or `flash`.
 - **Cover flash.** Flash data is checked with the same rule, under paths that start with `flash.`.
-- **Option A for a `JsonSerializable` prop type that resolution produced.** When a closure or a `ProvidesInertiaProperty` returns one, it is serialized as with the flag off, and its `jsonSerialize()` value is then checked (`src/PropsResolver.php:487-499`). A non-callable prop type given as it is has no such step and is refused like any other object.
+- **Option A for a `JsonSerializable` prop type that resolution produced.** When a closure or a `ProvidesInertiaProperty` returns one, it is serialized as with the flag off, and its `jsonSerialize()` value is then checked (`src/PropsResolver.php:500-512`). A non-callable prop type given as it is has no such step and is refused like any other object.
 
-The refusal is thrown outside the rescue (`src/PropsResolver.php:512`), so a rescuable deferred prop never hides it.
+The refusal is thrown outside the rescue (`src/PropsResolver.php:525`), so a rescuable deferred prop never hides it.
 
 Rejected alternatives:
 
@@ -54,7 +54,7 @@ Rejected alternatives:
 
 **Verification criteria:**
 
-- `tests/PropsResolverTest.php:1876-1893` pins the 3.0.0 output with the flag off, for a closure inside a `JsonSerializable` that is not a prop type, given directly and returned by a closure.
-- `tests/PropsResolverTest.php:1719-1757` pins the refusal of the entity a produced `JsonSerializable` prop type serializes to, and of one given as it is.
-- `tests/PropsResolverTest.php:2228` pins that a rescuable deferred prop does not hide a refusal.
+- `tests/PropsResolverTest.php:1880-1897` pins the 3.0.0 output with the flag off, for a closure inside a `JsonSerializable` that is not a prop type, given directly and returned by a closure.
+- `tests/PropsResolverTest.php:1723-1761` pins the refusal of the entity a produced `JsonSerializable` prop type serializes to, and of one given as it is.
+- `tests/PropsResolverTest.php:2460` pins that a rescuable deferred prop does not hide a refusal.
 - `tests/InertiaResponseTest.php:1428-1447` pins the refusal of flash data at its `flash.` path.

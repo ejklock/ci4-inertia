@@ -1444,6 +1444,17 @@ final class InertiaResponseTest extends CIUnitTestCase
         $this->flashedPage('data', $bag, true);
     }
 
+    public function testStrictPropsRefusesFlashDataThatHoldsItselfThroughAReferenceAtTheFlashPath(): void
+    {
+        $a         = ['x' => 1];
+        $a['self'] = &$a;
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Inertia flash value "flash" nests deeper than 512 levels when strictProps is on.');
+
+        $this->flashedPage('self', $a, true);
+    }
+
     public function testStrictPropsRefusesAnObjectNestedInFlashDataAtItsDotPath(): void
     {
         try {
