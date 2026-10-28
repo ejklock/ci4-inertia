@@ -5,12 +5,14 @@ declare(strict_types=1);
 namespace Ejklock\Ci4Inertia\Tests;
 
 use ArrayObject;
+use CodeIgniter\Config\Factories;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\ResponseInterface;
 use CodeIgniter\HTTP\SiteURI;
 use CodeIgniter\HTTP\UserAgent;
 use CodeIgniter\Test\CIUnitTestCase;
 use Config\App as AppConfig;
+use Config\Format;
 use Config\Services;
 use Ejklock\Ci4Inertia\Config\Inertia as InertiaConfig;
 use Ejklock\Ci4Inertia\LazyProp;
@@ -73,7 +75,7 @@ final class ResponseFactoryTest extends CIUnitTestCase
             $this->makeResponse(),
         );
 
-        return json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+        return json_decode((string) $response->getBody(), true, 1024, JSON_THROW_ON_ERROR);
     }
 
     public function testRenderMergesSharedPropsWithPerRenderPropsAndPerRenderWinsOnCollision(): void
@@ -174,6 +176,257 @@ final class ResponseFactoryTest extends CIUnitTestCase
         yield 'a plain object' => [new stdClass()];
 
         yield 'a raw closure not wrapped in a ResolvableProp' => [static fn (): string => 'value'];
+    }
+
+    #[DataProvider('provideNestedRefusals')]
+    public function testRenderRefusesAnObjectOrClosureNestedInAnArrayNamingItsDotPath(array $props, string $message): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+        $thrown = null;
+
+        try {
+            $factory->render('Users/Index', $props);
+        } catch (InvalidArgumentException $e) {
+            $thrown = $e;
+        }
+
+        $this->assertInstanceOf(InvalidArgumentException::class, $thrown);
+        $this->assertSame($message, $thrown->getMessage());
+    }
+
+    #[DataProvider('provideNestedRefusals')]
+    public function testShareRefusesAnObjectOrClosureNestedInAnArrayAndKeepsTheSharedProps(array $props, string $message): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+        $factory->share('kept', 1);
+
+        $thrown = null;
+
+        try {
+            $factory->share($props);
+        } catch (InvalidArgumentException $e) {
+            $thrown = $e;
+        }
+
+        $this->assertInstanceOf(InvalidArgumentException::class, $thrown);
+        $this->assertSame($message, $thrown->getMessage());
+        $this->assertSame(['kept' => 1], $this->renderPageObject($factory, 'Users/Index')['props']);
+    }
+
+    /**
+     * @return iterable<string, array{0: array<string, mixed>, 1: string}>
+     */
+    public static function provideNestedRefusals(): iterable
+    {
+        $entity = new class () {
+            public string $secret = 'x';
+        };
+
+        $format = 'Inertia prop "%s" must hold only scalars, arrays and null, %s given.';
+
+        yield 'a user object at depth 2' => [['a' => ['b' => $entity]], sprintf($format, 'a.b', 'class@anonymous')];
+
+        yield 'a stdClass at depth 2' => [['a' => ['b' => new stdClass()]], sprintf($format, 'a.b', 'stdClass')];
+
+        yield 'an object at depth 4 inside a list' => [
+            ['a' => [['b' => [1, $entity]]]],
+            sprintf($format, 'a.0.b.1', 'class@anonymous'),
+        ];
+
+        yield 'a ResolvableProp nested in an array' => [
+            ['a' => ['b' => new LazyProp(static fn (): int => 1)]],
+            sprintf($format, 'a.b', LazyProp::class),
+        ];
+
+        yield 'a closure nested in an array' => [['a' => ['b' => static fn (): int => 1]], sprintf($format, 'a.b', 'Closure')];
+    }
+
+    public function testRenderAcceptsNestedPlainDataUnchanged(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+        $props   = [
+            'a'     => ['n' => null, 'i' => 1, 'f' => 1.5, 'b' => true, 's' => 'x', 'e' => []],
+            'deep'  => [[[[[['leaf' => 'v']]]]]],
+            'empty' => [],
+        ];
+
+        $this->assertSame($props, $this->renderPageObject($factory, 'Users/Index', $props)['props']);
+    }
+
+    public function testRenderRefusesAnArrayThatHoldsItselfThroughAReference(): void
+    {
+        $factory   = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+        $a         = ['x' => 1];
+        $a['self'] = &$a;
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Inertia prop "a" nests deeper than 512 levels.');
+
+        $factory->render('Users/Index', ['a' => $a]);
+    }
+
+    public function testShareRefusesAnArrayThatHoldsItselfThroughAReferenceAndKeepsTheSharedProps(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+        $factory->share('kept', 1);
+        $a         = ['x' => 1];
+        $a['self'] = &$a;
+
+        $thrown = null;
+
+        try {
+            $factory->share('a', $a);
+        } catch (InvalidArgumentException $e) {
+            $thrown = $e;
+        }
+
+        $this->assertInstanceOf(InvalidArgumentException::class, $thrown);
+        $this->assertSame('Inertia prop "a" nests deeper than 512 levels.', $thrown->getMessage());
+        $this->assertSame(['kept' => 1], $this->renderPageObject($factory, 'Users/Index')['props']);
+    }
+
+    public function testRenderRefusesAnArrayNestedBeyondTheLevelLimitNamingOnlyTheTopLevelKey(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Inertia prop "deep" nests deeper than 512 levels.');
+
+        $factory->render('Users/Index', ['deep' => self::nestedArray(513)]);
+    }
+
+    public function testRenderAcceptsAnArrayNestedAtTheLevelLimit(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+        $this->expectNotToPerformAssertions();
+
+        $factory->render('Users/Index', ['deep' => self::nestedArray(512), 'shallow' => self::nestedArray(511)]);
+    }
+
+    /**
+     * The page object wraps the props in two more levels, so the raised limit leaves room for them.
+     */
+    public function testRenderCarriesAnArrayAtARaisedJsonEncodeDepthInTheXInertiaBody(): void
+    {
+        $this->withJsonEncodeDepth(700, function (): void {
+            $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+            $page = $this->renderPageObject($factory, 'Users/Index', ['deep' => self::nestedArray(600)]);
+
+            $this->assertSame(self::nestedArray(600), $page['props']['deep']);
+        });
+    }
+
+    public function testRenderRefusesAnArrayBeyondARaisedJsonEncodeDepth(): void
+    {
+        $this->withJsonEncodeDepth(600, function (): void {
+            $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+            $this->expectException(InvalidArgumentException::class);
+            $this->expectExceptionMessage('Inertia prop "deep" nests deeper than 600 levels.');
+
+            $factory->render('Users/Index', ['deep' => self::nestedArray(601)]);
+        });
+    }
+
+    public function testRenderCarriesAResolvedPropAtARaisedJsonEncodeDepthInTheXInertiaBody(): void
+    {
+        $this->withJsonEncodeDepth(700, function (): void {
+            $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+            $page = $this->renderPageObject($factory, 'Users/Index', [
+                'deep' => new LazyProp(static fn (): array => self::nestedArray(600)),
+            ]);
+
+            $this->assertSame(self::nestedArray(600), $page['props']['deep']);
+        });
+    }
+
+    public function testJsonEncodeDepthOverrideIsGoneAfterTheHelperRuns(): void
+    {
+        $this->withJsonEncodeDepth(600, function (): void {
+            $this->assertSame(600, config(Format::class)->jsonEncodeDepth);
+        });
+
+        $this->assertSame(512, config(Format::class)->jsonEncodeDepth);
+        $this->assertArrayNotHasKey('format.jsonEncodeDepth', $_SERVER);
+    }
+
+    public function testRenderHonorsALoweredJsonEncodeDepth(): void
+    {
+        $this->withJsonEncodeDepth(8, function (): void {
+            $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+            $factory->render('Users/Index', ['deep' => self::nestedArray(8)]);
+
+            $this->expectException(InvalidArgumentException::class);
+            $this->expectExceptionMessage('Inertia prop "deep" nests deeper than 8 levels.');
+
+            $factory->render('Users/Index', ['deep' => self::nestedArray(9)]);
+        });
+    }
+
+    public function testRenderRefusesAnArrayThatHoldsItselfNamingALoweredJsonEncodeDepth(): void
+    {
+        $this->withJsonEncodeDepth(8, function (): void {
+            $factory   = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+            $a         = ['x' => 1];
+            $a['self'] = &$a;
+
+            $this->expectException(InvalidArgumentException::class);
+            $this->expectExceptionMessage('Inertia prop "a" nests deeper than 8 levels.');
+
+            $factory->render('Users/Index', ['a' => $a]);
+        });
+    }
+
+    private function withJsonEncodeDepth(int $depth, callable $test): void
+    {
+        $key      = 'format.jsonEncodeDepth';
+        $existed  = array_key_exists($key, $_SERVER);
+        $original = $_SERVER[$key] ?? null; // @phpstan-ignore codeigniter.superglobalAccess (config reads live $_SERVER, not the snapshot service)
+
+        $_SERVER[$key] = (string) $depth; // @phpstan-ignore codeigniter.superglobalAccessAssign (config reads live $_SERVER, not the snapshot service)
+        Factories::reset('config');
+
+        try {
+            $test();
+        } finally {
+            if ($existed) {
+                $_SERVER[$key] = $original; // @phpstan-ignore codeigniter.superglobalAccessAssign (restores the live $_SERVER)
+            } else {
+                unset($_SERVER[$key]); // @phpstan-ignore codeigniter.superglobalAccess (restores the live $_SERVER)
+            }
+            Factories::reset('config');
+        }
+    }
+
+    /**
+     * @return array<int, mixed> The given number of arrays, each holding the next, the innermost empty.
+     */
+    private static function nestedArray(int $levels): array
+    {
+        $value = [];
+
+        for ($i = 1; $i < $levels; $i++) {
+            $value = [$value];
+        }
+
+        return $value;
+    }
+
+    public function testShareAcceptsNestedPlainData(): void
+    {
+        $factory = new ResponseFactory($this->makeRequest(), 'app', static fn (): string => 'v1');
+
+        $factory->share('auth', ['user' => ['roles' => ['admin', null, 2]]]);
+
+        $this->assertSame(
+            ['auth' => ['user' => ['roles' => ['admin', null, 2]]]],
+            $this->renderPageObject($factory, 'Users/Index')['props'],
+        );
     }
 
     public function testShareBatchFormSharesEveryEntryAcrossSubsequentRenders(): void

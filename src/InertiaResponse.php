@@ -6,6 +6,8 @@ namespace Ejklock\Ci4Inertia;
 
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\ResponseInterface;
+use Ejklock\Ci4Inertia\Support\PlainPropValue;
+use InvalidArgumentException;
 
 /**
  * Produces the Inertia page object for one render and picks the wire
@@ -203,7 +205,13 @@ final readonly class InertiaResponse
         $keys     = $this->requestedPropKeys($request);
         $filtered = array_intersect_key($this->props, array_flip($keys));
 
-        return array_map($this->resolvePropValue(...), $filtered);
+        $resolved = [];
+
+        foreach ($filtered as $key => $value) {
+            $resolved[$key] = $this->resolvePropValue((string) $key, $value);
+        }
+
+        return $resolved;
     }
 
     /**
@@ -283,10 +291,22 @@ final readonly class InertiaResponse
     /**
      * Returns the prop as-is, or its resolved value when it is a `ResolvableProp` — the
      * sole point in this class where a `LazyProp`, `OptionalProp`, `DeferProp` or `AlwaysProp` callback is invoked.
+     * The resolved value must be plain data, so a callback cannot hand an entity to the page.
+     *
+     * @throws InvalidArgumentException When the resolved value is not null, a scalar, an array or a `stdClass`
+     *                                  of the same, at any depth.
      */
-    private function resolvePropValue(mixed $value): mixed
+    private function resolvePropValue(string $key, mixed $value): mixed
     {
-        return $value instanceof ResolvableProp ? $value->resolve() : $value;
+        if (! $value instanceof ResolvableProp) {
+            return $value;
+        }
+
+        $resolved = $value->resolve();
+
+        PlainPropValue::assertResolved($key, $resolved);
+
+        return $resolved;
     }
 
     private function isInertiaRequest(IncomingRequest $request): bool

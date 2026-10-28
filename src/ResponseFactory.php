@@ -7,6 +7,7 @@ namespace Ejklock\Ci4Inertia;
 use Closure;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\ResponseInterface;
+use Ejklock\Ci4Inertia\Support\PlainPropValue;
 use InvalidArgumentException;
 
 /**
@@ -15,7 +16,8 @@ use InvalidArgumentException;
  * prop the client combines with its current value, `share()` for props carried across every render on this instance, `version()`
  * to override how the asset version is resolved, and `location()` to answer a stale-asset
  * reload. The props array is treated as an egress channel — only a scalar,
- * array, `null`, or `ResolvableProp` value may cross it, so a controller must state what
+ * array, `null`, or `ResolvableProp` value may cross it, and an array holds only scalars, arrays and `null`
+ * at every depth, so a controller must state what
  * leaves the server rather than hand over an entity by accident.
  */
 final class ResponseFactory
@@ -71,8 +73,9 @@ final class ResponseFactory
      * @param array<string, mixed> $props Per-render props, each a scalar, array, `null`,
      *                                    or `ResolvableProp`.
      *
-     * @throws InvalidArgumentException When a prop value is none of those shapes; the
-     *                                  message names the offending key.
+     * @throws InvalidArgumentException When a prop value is none of those shapes, or an array holds
+     *                                  anything but scalars, arrays and `null` at any depth; the
+     *                                  message names the offending key or dot path.
      */
     public function render(string $component, array $props = []): InertiaResponse
     {
@@ -164,8 +167,9 @@ final class ResponseFactory
      *                                           single prop name; ignored otherwise.
      *
      * @throws InvalidArgumentException When a shared value is not scalar, array, `null`,
-     *                                  or `ResolvableProp`; the message names the
-     *                                  offending key.
+     *                                  or `ResolvableProp`, or an array holds anything but
+     *                                  scalars, arrays and `null` at any depth; the message
+     *                                  names the offending key or dot path.
      */
     public function share(array|string $key, mixed $value = null): void
     {
@@ -235,8 +239,9 @@ final class ResponseFactory
      *
      * @param array<string, mixed> $props The prop map to validate, keyed by prop name.
      *
-     * @throws InvalidArgumentException When a value is none of the allowed shapes; the
-     *                                  message names the offending key.
+     * @throws InvalidArgumentException When a value is none of the allowed shapes, or an array
+     *                                  holds a nested non-plain value; the message names the
+     *                                  offending key or dot path.
      */
     private function assertValidPropValues(array $props): void
     {
@@ -248,6 +253,8 @@ final class ResponseFactory
                     get_debug_type($value),
                 ));
             }
+
+            PlainPropValue::assertGiven((string) $key, $value);
         }
     }
 

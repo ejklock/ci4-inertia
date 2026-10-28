@@ -8,7 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
-- `InertiaCsrfFilter` no longer redirects a refused Inertia visit to a `Referer` or a stored previous URL that holds a backslash or a control character, which PHP and a browser read as two different hosts; it falls back to the next on-site URL.
+- `InertiaCsrfFilter` now answers a refused Inertia visit whose `Referer` or stored previous URL holds a backslash or a control character with a 303 to the next on-site URL. On 0.2.0 the tab and backslash cases redirected to that URL, which PHP and a browser read as two different hosts; `\x00`, `\x1f`, `\x7f` and a newline made `redirect()->to()` throw `InvalidArgumentException`, a 500.
+- `render()` and `share()` now refuse an object nested at any depth inside an array prop, and the value a prop object resolves to is checked the same way (a plain `stdClass` is allowed there), so an entity never reaches the page through a nested array or a callback. An app that nests an object in a prop now gets an `InvalidArgumentException` naming the dot path. An array or `stdClass` nested deeper than the app's `Config\Format::$jsonEncodeDepth` (512 by default), the depth its JSON response encodes at, is refused too, naming the limit and only the top-level prop key; that also ends the walk on an array that holds itself through a reference.
 
 ## [0.2.0] - 2026-10-26
 

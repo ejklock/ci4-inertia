@@ -295,7 +295,7 @@ class Users extends BaseController
 
 An Inertia request (with an `X-Inertia` header) gets the page object as JSON. Any other request gets the root view. The header selects the format only; it never grants access.
 
-Props must be a scalar, an array, `null` or a prop object from this package. Anything else (an entity, for example) throws `InvalidArgumentException` naming the key, so you state what leaves the server.
+Props must be a scalar, an array, `null` or a prop object from this package. Anything else (an entity, for example) throws `InvalidArgumentException` naming the key, so you state what leaves the server. The guard applies at every depth: inside an array, at any level, only scalars, arrays and `null` are allowed, and the exception names the dot path, such as `user.roles.0`. The value a prop object resolves to is checked the same way, with a plain `stdClass` also allowed, so an entity cannot reach the page through a nested array or a callback. Arrays and `stdClass` objects nested deeper than your app's `Config\Format::$jsonEncodeDepth` (512 by default) are refused too, and that message names the limit and only the top-level key.
 
 ## Shared props
 

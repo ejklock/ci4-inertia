@@ -4,20 +4,26 @@ declare(strict_types=1);
 
 namespace Ejklock\Ci4Inertia\Tests;
 
+use ArrayObject;
+use CodeIgniter\Config\Factories;
+use CodeIgniter\Format\Exceptions\FormatException;
 use CodeIgniter\HTTP\IncomingRequest;
 use CodeIgniter\HTTP\ResponseInterface;
 use CodeIgniter\HTTP\SiteURI;
 use CodeIgniter\HTTP\UserAgent;
 use CodeIgniter\Test\CIUnitTestCase;
 use Config\App as AppConfig;
+use Config\Format;
 use Ejklock\Ci4Inertia\AlwaysProp;
 use Ejklock\Ci4Inertia\DeferProp;
 use Ejklock\Ci4Inertia\InertiaResponse;
 use Ejklock\Ci4Inertia\LazyProp;
 use Ejklock\Ci4Inertia\MergeProp;
 use Ejklock\Ci4Inertia\OptionalProp;
+use Ejklock\Ci4Inertia\ResolvableProp;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use stdClass;
 
 /**
  * Verifies `InertiaResponse` against the protocol contract in docs/architecture/inertia.md:
@@ -865,5 +871,316 @@ final class InertiaResponseTest extends CIUnitTestCase
 
         $this->assertTrue($page['encryptHistory']);
         $this->assertTrue($page['clearHistory']);
+    }
+
+    /**
+     * @param array<string, mixed>  $props
+     * @param array<string, string> $headers
+     *
+     * @return array<string, mixed>
+     */
+    private function renderProps(array $props, array $headers = []): array
+    {
+        $response = (new InertiaResponse('Users/Index', $props, 'v1', self::SHELL_VIEW))
+            ->toResponse($this->makeRequest('users', ['X-Inertia' => 'true', ...$headers]), $this->makeResponse());
+
+        return json_decode((string) $response->getBody(), true, 1024, JSON_THROW_ON_ERROR)['props'];
+    }
+
+    /**
+     * @param array<string, mixed>  $props
+     * @param array<string, string> $headers
+     */
+    private function assertRefusedOnBuild(array $props, string $message, array $headers = []): void
+    {
+        $thrown = null;
+
+        try {
+            $this->renderProps($props, $headers);
+        } catch (InvalidArgumentException $e) {
+            $thrown = $e;
+        }
+
+        $this->assertInstanceOf(InvalidArgumentException::class, $thrown);
+        $this->assertSame($message, $thrown->getMessage());
+    }
+
+    /**
+     * @param array<string, string> $headers
+     */
+    #[DataProvider('provideResolvedEntityInsideAnArrayIsRefusedAtThePropKeyAndSubKey')]
+    public function testResolvedEntityInsideAnArrayIsRefusedAtThePropKeyAndSubKey(callable $make, array $headers): void
+    {
+        $entity = new class () {
+            public string $secret = 'x';
+        };
+
+        $this->assertRefusedOnBuild(
+            ['key' => $make(static fn (): array => ['sub' => $entity])],
+            'Inertia prop "key.sub" must resolve to only scalars, arrays, null and stdClass objects, class@anonymous given.',
+            $headers,
+        );
+    }
+
+    /**
+     * @return iterable<string, array{0: callable(callable): ResolvableProp, 1: array<string, string>}>
+     */
+    public static function provideResolvedEntityInsideAnArrayIsRefusedAtThePropKeyAndSubKey(): iterable
+    {
+        yield 'a LazyProp' => [static fn (callable $c): ResolvableProp => new LazyProp($c), []];
+
+        yield 'an AlwaysProp' => [static fn (callable $c): ResolvableProp => new AlwaysProp($c), []];
+
+        yield 'a MergeProp' => [static fn (callable $c): ResolvableProp => new MergeProp($c(...)), []];
+
+        yield 'a DeferProp loaded by a partial reload' => [
+            static fn (callable $c): ResolvableProp => new DeferProp($c),
+            ['X-Inertia-Partial-Component' => 'Users/Index', 'X-Inertia-Partial-Data' => 'key'],
+        ];
+    }
+
+    public function testResolvedEntityAtTheTopIsRefusedAtThePropKey(): void
+    {
+        $this->assertRefusedOnBuild(
+            ['key' => new LazyProp(static fn (): ArrayObject => new ArrayObject())],
+            'Inertia prop "key" must resolve to only scalars, arrays, null and stdClass objects, ArrayObject given.',
+        );
+    }
+
+    public function testEntityInsideAReturnedStdClassIsRefused(): void
+    {
+        $this->assertRefusedOnBuild(
+            ['key' => new LazyProp(static fn (): object => (object) ['sub' => new ArrayObject()])],
+            'Inertia prop "key.sub" must resolve to only scalars, arrays, null and stdClass objects, ArrayObject given.',
+        );
+    }
+
+    public function testStdClassHoldingItselfIsRefusedAtItsPath(): void
+    {
+        $this->assertRefusedOnBuild(
+            ['key' => new LazyProp(static function (): object {
+                $bag     = new stdClass();
+                $bag->me = $bag;
+
+                return $bag;
+            })],
+            'Inertia prop "key.me" must resolve to only scalars, arrays, null and stdClass objects, stdClass given.',
+        );
+    }
+
+    public function testResolvedArrayThatHoldsItselfThroughAReferenceIsRefused(): void
+    {
+        $this->assertRefusedOnBuild(
+            ['a' => new LazyProp(static function (): array {
+                $a         = ['x' => 1];
+                $a['self'] = &$a;
+
+                return $a;
+            })],
+            'Inertia prop "a" nests deeper than 512 levels.',
+        );
+    }
+
+    public function testResolvedArrayNestedBeyondTheLevelLimitIsRefusedNamingOnlyTheTopLevelKey(): void
+    {
+        $this->assertRefusedOnBuild(
+            ['deep' => new LazyProp(static fn (): array => self::nestedArray(513))],
+            'Inertia prop "deep" nests deeper than 512 levels.',
+        );
+    }
+
+    public function testResolvedStdClassNestedBeyondTheLevelLimitIsRefused(): void
+    {
+        $this->assertRefusedOnBuild(
+            ['deep' => new LazyProp(static fn (): object => self::nestedBag(513))],
+            'Inertia prop "deep" nests deeper than 512 levels.',
+        );
+    }
+
+    /**
+     * The page object wraps the props in two more levels, so a value this deep passes the
+     * prop check and then fails at JSON encoding, which is where the exception type tells
+     * the two apart.
+     */
+    #[DataProvider('provideResolvedValueNestedUpToTheLevelLimitPassesThePropCheck')]
+    public function testResolvedValueNestedUpToTheLevelLimitPassesThePropCheck(int $levels, bool $bag): void
+    {
+        $inertia = new InertiaResponse('Users/Index', [
+            'deep' => new LazyProp(static fn (): array|stdClass => $bag ? self::nestedBag($levels) : self::nestedArray($levels)),
+        ], 'v1', self::SHELL_VIEW);
+
+        $this->expectException(FormatException::class);
+
+        $inertia->toResponse($this->makeRequest('users', ['X-Inertia' => 'true']), $this->makeResponse());
+    }
+
+    /**
+     * @return iterable<string, array{0: int, 1: bool}>
+     */
+    public static function provideResolvedValueNestedUpToTheLevelLimitPassesThePropCheck(): iterable
+    {
+        yield 'an array at 511 levels' => [511, false];
+
+        yield 'an array at 512 levels' => [512, false];
+
+        yield 'a stdClass at 512 levels' => [512, true];
+    }
+
+    public function testResolvedValueHonorsARaisedJsonEncodeDepth(): void
+    {
+        $this->withJsonEncodeDepth(600, function (): void {
+            $this->assertRefusedOnBuild(
+                ['deep' => new LazyProp(static fn (): array => self::nestedArray(601))],
+                'Inertia prop "deep" nests deeper than 600 levels.',
+            );
+        });
+    }
+
+    /**
+     * The page object wraps the props in two more levels, so the raised limit leaves room for them.
+     */
+    public function testResolvedValueAtARaisedJsonEncodeDepthIsCarriedInTheXInertiaBody(): void
+    {
+        $this->withJsonEncodeDepth(700, function (): void {
+            $props = $this->renderProps(['deep' => new LazyProp(static fn (): array => self::nestedArray(600))]);
+
+            $this->assertSame(self::nestedArray(600), $props['deep']);
+        });
+    }
+
+    public function testPropGivenDirectlyAtARaisedJsonEncodeDepthIsCarriedInTheXInertiaBody(): void
+    {
+        $this->withJsonEncodeDepth(700, function (): void {
+            $props = $this->renderProps(['deep' => self::nestedArray(600)]);
+
+            $this->assertSame(self::nestedArray(600), $props['deep']);
+        });
+    }
+
+    public function testJsonEncodeDepthOverrideIsGoneAfterTheHelperRuns(): void
+    {
+        $this->withJsonEncodeDepth(600, function (): void {
+            $this->assertSame(600, config(Format::class)->jsonEncodeDepth);
+        });
+
+        $this->assertSame(512, config(Format::class)->jsonEncodeDepth);
+        $this->assertArrayNotHasKey('format.jsonEncodeDepth', $_SERVER);
+    }
+
+    public function testResolvedValueHonorsALoweredJsonEncodeDepth(): void
+    {
+        $this->withJsonEncodeDepth(8, function (): void {
+            $this->assertRefusedOnBuild(
+                ['deep' => new LazyProp(static fn (): array => self::nestedArray(9))],
+                'Inertia prop "deep" nests deeper than 8 levels.',
+            );
+            $this->assertRefusedOnBuild(
+                ['deep' => new LazyProp(static fn (): object => self::nestedBag(9))],
+                'Inertia prop "deep" nests deeper than 8 levels.',
+            );
+            $this->assertRefusedOnBuild(
+                ['a' => new LazyProp(static function (): array {
+                    $a         = ['x' => 1];
+                    $a['self'] = &$a;
+
+                    return $a;
+                })],
+                'Inertia prop "a" nests deeper than 8 levels.',
+            );
+
+            $this->assertSame(
+                self::nestedArray(6),
+                $this->renderProps(['deep' => new LazyProp(static fn (): array => self::nestedArray(6))])['deep'],
+            );
+        });
+    }
+
+    private function withJsonEncodeDepth(int $depth, callable $test): void
+    {
+        $key      = 'format.jsonEncodeDepth';
+        $existed  = array_key_exists($key, $_SERVER);
+        $original = $_SERVER[$key] ?? null; // @phpstan-ignore codeigniter.superglobalAccess (config reads live $_SERVER, not the snapshot service)
+
+        $_SERVER[$key] = (string) $depth; // @phpstan-ignore codeigniter.superglobalAccessAssign (config reads live $_SERVER, not the snapshot service)
+        Factories::reset('config');
+
+        try {
+            $test();
+        } finally {
+            if ($existed) {
+                $_SERVER[$key] = $original; // @phpstan-ignore codeigniter.superglobalAccessAssign (restores the live $_SERVER)
+            } else {
+                unset($_SERVER[$key]); // @phpstan-ignore codeigniter.superglobalAccess (restores the live $_SERVER)
+            }
+            Factories::reset('config');
+        }
+    }
+
+    /**
+     * @return array<int, mixed> The given number of arrays, each holding the next, the innermost empty.
+     */
+    private static function nestedArray(int $levels): array
+    {
+        $value = [];
+
+        for ($i = 1; $i < $levels; $i++) {
+            $value = [$value];
+        }
+
+        return $value;
+    }
+
+    /**
+     * @return stdClass The given number of objects, each holding the next, the innermost empty.
+     */
+    private static function nestedBag(int $levels): stdClass
+    {
+        $value = new stdClass();
+
+        for ($i = 1; $i < $levels; $i++) {
+            $value = (object) ['n' => $value];
+        }
+
+        return $value;
+    }
+
+    public function testResolvedStdClassOfPlainDataAndPlainValuesAreSent(): void
+    {
+        $props = $this->renderProps([
+            'bag'    => new LazyProp(static fn (): object => (object) ['a' => [1, null, 'x'], 'b' => (object) ['c' => 1.5]]),
+            'list'   => new AlwaysProp(static fn (): array => [['x' => true]]),
+            'scalar' => new LazyProp(static fn (): int => 3),
+            'none'   => new LazyProp(static fn (): ?string => null),
+        ]);
+
+        $this->assertSame([
+            'bag'    => ['a' => [1, null, 'x'], 'b' => ['c' => 1.5]],
+            'list'   => [['x' => true]],
+            'scalar' => 3,
+            'none'   => null,
+        ], $props);
+    }
+
+    public function testErrorsPropResolvingToAnEmptyStdClassIsSent(): void
+    {
+        $props = $this->renderProps(['errors' => new AlwaysProp(static fn (): object => (object) [])]);
+
+        $this->assertSame([], $props['errors']);
+    }
+
+    public function testAnEntityBehindAPropLeftOutByAPartialReloadIsNeverResolved(): void
+    {
+        $invoked = false;
+        $props   = $this->renderProps([
+            'users'  => ['a'],
+            'entity' => new LazyProp(static function () use (&$invoked): object {
+                $invoked = true;
+
+                return new ArrayObject();
+            }),
+        ], ['X-Inertia-Partial-Component' => 'Users/Index', 'X-Inertia-Partial-Data' => 'users']);
+
+        $this->assertSame(['users' => ['a']], $props);
+        $this->assertFalse($invoked);
     }
 }
