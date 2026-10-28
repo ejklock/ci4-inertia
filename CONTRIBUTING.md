@@ -35,6 +35,8 @@ Run each with `sh bin/dev composer <name>`.
 | `analyze` | PHPStan, Psalm and Rector (dry run). |
 | `analyze:taint` | Psalm taint analysis of `src/`, with the request getters declared as taint sources in `stubs/psalm/codeigniter-taint.phpstub`. |
 | `test:ini-variants` | The SSR gateway tests under `arg_separator.input=';'`, `arg_separator.input='&;'` and `max_input_vars=0`, which `ini_set` cannot reach. |
+| `fuzz:smoke` | A bounded run, about 25 seconds each, of the two coverage-guided fuzz targets in `tests/Fuzz/` (the SSR exclusion check and the same-origin check); fails on a crash. It runs with `XDEBUG_MODE=off`, which keeps it fast under CI's coverage-enabled PHP. CI runs it. |
+| `fuzz` | The same two targets for far longer, about 10 minutes: 20 million runs of the exclusion check and 30 million of the same-origin check, each in passes of 2 and 3 million so the memory `parse_str` grows by in a long-lived process stays bounded (about 72 MB a pass). It has no process timeout; run it locally before a release. Seeds live in `tests/Fuzz/corpus/`; crashes land in `build/fuzz/crash/`. |
 | `cs` | PHP CS Fixer in dry-run mode; shows the diff and fails on a violation. |
 | `cs:fix` | PHP CS Fixer; fixes the code style. |
 

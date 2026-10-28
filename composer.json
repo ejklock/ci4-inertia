@@ -31,6 +31,7 @@
         "codeigniter/phpstan-codeigniter": "^1.5",
         "codeigniter4/devkit": "^1.3",
         "infection/infection": "^0.35.6",
+        "nikic/php-fuzzer": "^0.0.11",
         "phpat/phpat": "^0.12.4",
         "phpstan/extension-installer": "^1.4",
         "phpstan/phpstan": "^2.2",
@@ -66,6 +67,23 @@
         "analyze:taint": "psalm --config=psalm.taint.xml --taint-analysis --no-cache",
         "cs": "php-cs-fixer fix --dry-run --diff --verbose",
         "cs:fix": "php-cs-fixer fix",
+        "fuzz": [
+            "Composer\\Config::disableProcessTimeout",
+            "@fuzz:prepare",
+            "cd build/fuzz/crash && status=0; for pass in 1 2 3 4 5 6 7 8 9 10; do XDEBUG_MODE=off php -d max_input_vars=50 -d auto_prepend_file=../../../tests/Fuzz/bootstrap.php ../../../vendor/bin/php-fuzzer fuzz ../../../tests/Fuzz/ExceptPatternsTarget.php ../except-patterns --max-runs 2000000 >> ../except-patterns.log 2>&1 || { status=$?; break; }; done; tail -n 12 ../except-patterns.log; exit $status",
+            "@fuzz:check",
+            "cd build/fuzz/crash && status=0; for pass in 1 2 3 4 5 6 7 8 9 10; do XDEBUG_MODE=off php -d max_input_vars=50 -d auto_prepend_file=../../../tests/Fuzz/bootstrap.php ../../../vendor/bin/php-fuzzer fuzz ../../../tests/Fuzz/SiteOriginTarget.php ../site-origin --max-runs 3000000 >> ../site-origin.log 2>&1 || { status=$?; break; }; done; tail -n 12 ../site-origin.log; exit $status",
+            "@fuzz:check"
+        ],
+        "fuzz:check": "if [ -n \"$(ls -A build/fuzz/crash)\" ] || grep -qE 'CRASH|Fatal error' build/fuzz/*.log; then grep -hE 'CRASH|Fatal error' build/fuzz/*.log | head -n 5; ls build/fuzz/crash; exit 1; fi",
+        "fuzz:prepare": "rm -rf build/fuzz && mkdir -p build/fuzz/crash build/fuzz/except-patterns build/fuzz/site-origin && cp tests/Fuzz/corpus/except-patterns/* build/fuzz/except-patterns/ && cp tests/Fuzz/corpus/site-origin/* build/fuzz/site-origin/",
+        "fuzz:smoke": [
+            "@fuzz:prepare",
+            "cd build/fuzz/crash && XDEBUG_MODE=off php -d max_input_vars=50 -d auto_prepend_file=../../../tests/Fuzz/bootstrap.php ../../../vendor/bin/php-fuzzer fuzz ../../../tests/Fuzz/ExceptPatternsTarget.php ../except-patterns --max-runs 1800000 > ../except-patterns.log 2>&1; status=$?; tail -n 12 ../except-patterns.log; exit $status",
+            "@fuzz:check",
+            "cd build/fuzz/crash && XDEBUG_MODE=off php -d max_input_vars=50 -d auto_prepend_file=../../../tests/Fuzz/bootstrap.php ../../../vendor/bin/php-fuzzer fuzz ../../../tests/Fuzz/SiteOriginTarget.php ../site-origin --max-runs 3000000 > ../site-origin.log 2>&1; status=$?; tail -n 12 ../site-origin.log; exit $status",
+            "@fuzz:check"
+        ],
         "mutation": [
             "Composer\\Config::disableProcessTimeout",
             "XDEBUG_MODE=coverage infection --no-progress --min-msi=80"
