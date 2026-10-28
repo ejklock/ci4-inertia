@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-28
+
 ### Security
 
 - `InertiaCsrfFilter` now answers a refused Inertia visit whose `Referer` or stored previous URL holds a backslash or a control character with a 303 to the next on-site URL. On 0.2.0 the tab and backslash cases redirected to that URL, which PHP and a browser read as two different hosts; `\x00`, `\x1f`, `\x7f` and a newline made `redirect()->to()` throw `InvalidArgumentException`, a 500.
@@ -40,6 +42,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - History encryption (`encryptHistory` setting, `ResponseFactory::encryptHistory()`) and one-shot history clearing (`ResponseFactory::clearHistory()`).
 - Test helpers `InertiaTestTrait` and `AssertableInertia` for feature tests.
 
-[Unreleased]: https://github.com/ejklock/ci4-inertia/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ejklock/ci4-inertia/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/ejklock/ci4-inertia/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ejklock/ci4-inertia/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ejklock/ci4-inertia/releases/tag/v0.1.0
