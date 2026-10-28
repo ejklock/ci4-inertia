@@ -83,7 +83,10 @@ jobs:
           php-version: "8.4"
           dependency-versions: highest
           coverage: xdebug
+      - run: composer audit --abandoned=fail
       - run: composer analyze
+      - run: composer analyze:taint
       - run: composer cs
+      - run: composer test:ini-variants
       - run: composer test:coverage-gate
       - run: composer mutation

@@ -1,0 +1,263 @@
+<?php
+
+namespace CodeIgniter\HTTP {
+
+/**
+ * Marks the request getters that return client-controlled data as taint sources.
+ * Only these getters are redeclared; every other member comes from the framework class.
+ */
+class IncomingRequest extends Request
+{
+    /**
+     * @psalm-taint-source input
+     * @param mixed $index
+     * @param mixed $filter
+     * @param mixed $flags
+     *
+     * @return mixed
+     */
+    public function getServer($index = null, $filter = null, $flags = null) {}
+
+    /**
+     * @psalm-taint-source input
+     *
+     * @return Header|list<Header>|null
+     */
+    public function getHeader(string $name) {}
+
+    /**
+     * @psalm-taint-source input
+     *
+     * @return string
+     */
+    public function getHeaderLine(string $name) : string {}
+
+    /**
+     * @psalm-taint-source input
+     * @param string $name
+     *
+     * @return Header|list<Header>|null
+     */
+    public function header($name) {}
+
+    /**
+     * @psalm-taint-source input
+     * @param mixed $index
+     * @param mixed $filter
+     * @param mixed $flags
+     *
+     * @return mixed
+     */
+    public function getVar($index = null, $filter = null, $flags = null) {}
+
+    /**
+     * @psalm-taint-source input
+     * @param mixed $index
+     * @param mixed $filter
+     * @param mixed $flags
+     *
+     * @return mixed
+     */
+    public function getGet($index = null, $filter = null, $flags = null) {}
+
+    /**
+     * @psalm-taint-source input
+     * @param mixed $index
+     * @param mixed $filter
+     * @param mixed $flags
+     *
+     * @return mixed
+     */
+    public function getPost($index = null, $filter = null, $flags = null) {}
+
+    /**
+     * @psalm-taint-source input
+     * @param mixed $index
+     * @param mixed $filter
+     * @param mixed $flags
+     *
+     * @return mixed
+     */
+    public function getPostGet($index = null, $filter = null, $flags = null) {}
+
+    /**
+     * @psalm-taint-source input
+     * @param mixed $index
+     * @param mixed $filter
+     * @param mixed $flags
+     *
+     * @return mixed
+     */
+    public function getGetPost($index = null, $filter = null, $flags = null) {}
+
+    /**
+     * @psalm-taint-source input
+     *
+     * @return mixed
+     */
+    public function getJSON(bool $assoc = false, int $depth = 512, int $options = 0) {}
+
+    /**
+     * @psalm-taint-source input
+     * @param mixed $index
+     * @param mixed $filter
+     * @param mixed $flags
+     *
+     * @return mixed
+     */
+    public function getJsonVar($index = null, bool $assoc = false, ?int $filter = null, $flags = null) {}
+
+    /**
+     * @psalm-taint-source input
+     *
+     * @return mixed
+     */
+    public function getRawInput() {}
+
+    /**
+     * @psalm-taint-source input
+     * @param mixed $index
+     * @param mixed $filter
+     * @param mixed $flags
+     *
+     * @return mixed
+     */
+    public function getRawInputVar($index = null, ?int $filter = null, $flags = null) {}
+
+    /**
+     * @psalm-taint-source input
+     *
+     * @return mixed
+     */
+    public function getBody() {}
+
+    /**
+     * @psalm-taint-source input
+     * @param mixed $index
+     * @param mixed $filter
+     * @param mixed $flags
+     *
+     * @return mixed
+     */
+    public function getCookie($index = null, $filter = null, $flags = null) {}
+
+    /**
+     * @psalm-taint-source input
+     *
+     * @return URI
+     */
+    public function getUri() {}
+
+    /**
+     * @psalm-taint-source input
+     *
+     * @return string
+     */
+    public function getPath() : string {}
+}
+}
+
+namespace CodeIgniter\HTTP {
+class URI
+{
+    /**
+     * @psalm-taint-source input
+     */
+    public function getAuthority(bool $ignorePort = false): string {}
+
+    /**
+     * @psalm-taint-source input
+     */
+    public function getUserInfo() {}
+
+    /**
+     * @psalm-taint-source input
+     */
+    public function getHost(): string {}
+
+    /**
+     * @psalm-taint-source input
+     */
+    public function getPath(): string {}
+
+    /**
+     * @psalm-taint-source input
+     */
+    public function getQuery(array $options = []): string {}
+
+    /**
+     * @psalm-taint-source input
+     */
+    public function getFragment(): string {}
+
+    /**
+     * @psalm-taint-source input
+     */
+    public function getSegments(): array {}
+
+    /**
+     * @psalm-taint-source input
+     */
+    public function getSegment(int $number, string $default = ''): string {}
+
+    /**
+     * @psalm-taint-source input
+     */
+    public function __toString(): string {}
+}
+}
+
+namespace CodeIgniter\Session {
+class Session
+{
+    /**
+     * @psalm-taint-source input
+     *
+     * @param string|null $key
+     *
+     * @return mixed
+     */
+    public function get(?string $key = null) {}
+
+    /**
+     * @psalm-taint-source input
+     *
+     * @param string|null $key
+     *
+     * @return mixed
+     */
+    public function getFlashdata(?string $key = null) {}
+
+    /**
+     * @psalm-taint-source input
+     *
+     * @param string|null $key
+     *
+     * @return mixed
+     */
+    public function getTempdata(?string $key = null) {}
+}
+}
+
+namespace {
+    /**
+     * @psalm-taint-source input
+     *
+     * @return ($val is null ? \CodeIgniter\Session\Session : mixed)
+     */
+    function session(?string $val = null) {}
+
+    /**
+     * @psalm-taint-source input
+     *
+     * @return ($returnObject is true ? \CodeIgniter\HTTP\URI : string)
+     */
+    function previous_url(bool $returnObject = false): string|\CodeIgniter\HTTP\URI {}
+
+    /**
+     * @psalm-taint-source input
+     *
+     * @return ($returnObject is true ? \CodeIgniter\HTTP\URI : string)
+     */
+    function current_url(bool $returnObject = false, ?\CodeIgniter\HTTP\IncomingRequest $request = null): string|\CodeIgniter\HTTP\URI {}
+}

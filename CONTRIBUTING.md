@@ -33,6 +33,8 @@ Run each with `sh bin/dev composer <name>`.
 | `test:coverage-gate` | `test:coverage` then `coverage:check`. |
 | `mutation` | Infection mutation testing; fails when the mutation score indicator (MSI) is below 80%. |
 | `analyze` | PHPStan, Psalm and Rector (dry run). |
+| `analyze:taint` | Psalm taint analysis of `src/`, with the request getters declared as taint sources in `stubs/psalm/codeigniter-taint.phpstub`. |
+| `test:ini-variants` | The SSR gateway tests under `arg_separator.input=';'`, `arg_separator.input='&;'` and `max_input_vars=0`, which `ini_set` cannot reach. |
 | `cs` | PHP CS Fixer in dry-run mode; shows the diff and fails on a violation. |
 | `cs:fix` | PHP CS Fixer; fixes the code style. |
 
@@ -43,7 +45,9 @@ A pull request must pass CI, which enforces:
 - all tests green, on PHP 8.2 to 8.5 with the lowest and the highest dependencies;
 - line coverage of at least 80%;
 - mutation score indicator (MSI) of at least 80%;
-- `analyze` clean;
+- `analyze` and `analyze:taint` clean;
+- `composer audit --abandoned=fail` reports no advisory and no abandoned package;
+- `test:ini-variants` green;
 - `cs` clean.
 
 Docs-only changes (README, CHANGELOG, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY and the issue and pull request templates) skip the code jobs.

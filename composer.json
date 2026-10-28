@@ -63,6 +63,7 @@
             "rector process --dry-run"
         ],
         "coverage:check": "coverage-check build/logs/clover.xml 80",
+        "analyze:taint": "psalm --config=psalm.taint.xml --taint-analysis --no-cache",
         "cs": "php-cs-fixer fix --dry-run --diff --verbose",
         "cs:fix": "php-cs-fixer fix",
         "mutation": [
@@ -70,6 +71,11 @@
             "XDEBUG_MODE=coverage infection --no-progress --min-msi=80"
         ],
         "test": "phpunit --no-coverage",
+        "test:ini-variants": [
+            "@php -d arg_separator.input=';' vendor/bin/phpunit --no-coverage --filter HttpGatewayTest",
+            "@php -d 'arg_separator.input=&;' vendor/bin/phpunit --no-coverage --filter HttpGatewayTest",
+            "@php -d max_input_vars=0 vendor/bin/phpunit --no-coverage --filter HttpGatewayTest"
+        ],
         "test:coverage": "XDEBUG_MODE=coverage phpunit",
         "test:coverage-gate": [
             "@test:coverage",

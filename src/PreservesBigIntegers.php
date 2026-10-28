@@ -6,7 +6,7 @@ namespace Ejklock\Ci4Inertia;
 
 use BackedEnum;
 use JsonSerializable;
-use ReflectionClass;
+use ReflectionObject;
 use SplObjectStorage;
 use stdClass;
 use UnitEnum;
@@ -136,7 +136,7 @@ trait PreservesBigIntegers
             return true;
         }
 
-        for ($class = new ReflectionClass($value); $class !== false; $class = $class->getParentClass()) {
+        for ($class = new ReflectionObject($value); $class !== false; $class = $class->getParentClass()) {
             if ($class->isInternal()) {
                 return false;
             }
