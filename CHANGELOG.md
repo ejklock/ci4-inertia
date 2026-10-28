@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-28
+
 This release ports inertia-laravel 3.5.2 for the Inertia v3 client. To upgrade from 0.2.x, follow [UPGRADING.md](UPGRADING.md).
 
 ### Added
@@ -99,6 +101,7 @@ This release ports inertia-laravel 3.5.2 for the Inertia v3 client. To upgrade f
 - History encryption (`encryptHistory` setting, `ResponseFactory::encryptHistory()`) and one-shot history clearing (`ResponseFactory::clearHistory()`).
 - Test helpers `InertiaTestTrait` and `AssertableInertia` for feature tests.
 
-[Unreleased]: https://github.com/ejklock/ci4-inertia/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ejklock/ci4-inertia/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/ejklock/ci4-inertia/compare/v0.2.0...v3.0.0
 [0.2.0]: https://github.com/ejklock/ci4-inertia/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ejklock/ci4-inertia/releases/tag/v0.1.0
