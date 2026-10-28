@@ -30,7 +30,7 @@ Rejected alternatives:
 
 **Harder / accepted trade-offs:**
 
-- The package never has a 1.x or 2.x series, and the 0.x history stops at 0.2.0.
+- The package never has a 1.x or 2.x series, and the 0.x history stops at 0.2.0. ADR [0011](0011-maintain-a-0-2-x-security-line-for-inertia-2-clients.md) amends this: the 0.2.x line continues with security patches.
 - A breaking change that does not follow a protocol change has no number that keeps the two majors equal.
 
 **Follow-ups:**

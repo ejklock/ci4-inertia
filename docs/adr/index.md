@@ -12,3 +12,4 @@
 * [0008 — Bound inertia:stop-ssr with a 2 s connect and 5 s total timeout](0008-bound-inertia-stop-ssr-with-a-2-s-connect-and-5-s-total-timeout.md) - Accepted
 * [0009 — Require symfony/process for inertia:start-ssr](0009-require-symfony-process-for-inertia-start-ssr.md) - Accepted
 * [0010 — Add an opt-in strictProps check on props and flash data](0010-add-an-opt-in-strictprops-check-on-props-and-flash-data.md) - Accepted
+* [0011 — Maintain a 0.2.x security line for Inertia 2 clients](0011-maintain-a-0-2-x-security-line-for-inertia-2-clients.md) - Accepted

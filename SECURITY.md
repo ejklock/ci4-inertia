@@ -5,7 +5,7 @@
 | Version | Supported |
 | --- | --- |
 | 3.x | Yes |
-| 0.2.x | No |
+| 0.2.x | Security fixes only |
 | 0.1.x | No |
 
 Only the latest release of a supported series receives fixes.
