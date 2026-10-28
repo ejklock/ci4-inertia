@@ -204,6 +204,8 @@ final class CsrfFiltersTest extends CIUnitTestCase
         yield 'malformed' => ['http://:::'];
 
         yield 'userinfo' => ['http://' . $host . ':' . ($base['port'] ?? 80) . '@evil.example/'];
+
+        yield 'backslash hiding the real host' => ['http://evil.example\\@' . $host . '/'];
     }
 
     public function testInertiaRequestWithAnOnSiteRefererAndNoPreviousUrlIsRedirectedThere(): void

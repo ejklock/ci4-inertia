@@ -15,6 +15,7 @@ use Ejklock\Ci4Inertia\ResponseFactory;
 use Ejklock\Ci4Inertia\Ssr\ExcludesSsrPaths;
 use Ejklock\Ci4Inertia\Support\Header;
 use Ejklock\Ci4Inertia\Support\SessionKey;
+use Ejklock\Ci4Inertia\Support\SiteOrigin;
 
 /**
  * Enforces the wire-level Inertia protocol rules at the filter layer: shares the CI4
@@ -239,15 +240,21 @@ class InertiaFilter implements FilterInterface
 
     /**
      * The response for an Inertia request answered with an empty `200`: a redirect to the
-     * previous URL, as `previous_url()` reads it (the stored one, else the `Referer`, else the
-     * site root). It does not use `redirect()->back()`, which starts a session the request
+     * previous URL in the order `previous_url()` reads it (the stored one, else the `Referer`,
+     * else the site root), skipping a source that is not on the site's own origin so a forged
+     * `Referer` cannot send the visitor elsewhere. It does not use `redirect()->back()`, which starts a session the request
      * may not carry. The status is a fixed `302`, so the filter's own rewrite turns it into
      * `303` for `PUT`, `PATCH` and `DELETE` whatever protocol CodeIgniter would pick. An
      * extending class overrides it to answer differently.
      */
     protected function onEmptyResponse(IncomingRequest $request, ResponseInterface $response): ResponseInterface
     {
-        return redirect()->to(previous_url(), 302);
+        $stored = isset($_SESSION) ? session(self::PREVIOUS_URL_SESSION_KEY) : null;
+        $url    = (is_string($stored) ? SiteOrigin::urlOrNull($stored) : null)
+            ?? SiteOrigin::urlOrNull((string) $request->getServer('HTTP_REFERER', FILTER_SANITIZE_URL))
+            ?? site_url('/');
+
+        return redirect()->to($url, 302);
     }
 
     /**

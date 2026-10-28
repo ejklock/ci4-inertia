@@ -31,6 +31,7 @@ use Ejklock\Ci4Inertia\Support\SessionKey;
 use InvalidArgumentException;
 use LogicException;
 use PHPUnit\Framework\Assert;
+use PHPUnit\Framework\Attributes\DataProviderExternal;
 use ReflectionClass;
 use RuntimeException;
 use stdClass;
@@ -1177,16 +1178,16 @@ final class ResponseFactoryTest extends CIUnitTestCase
 
     public function testBackRedirectsToTheReferer(): void
     {
-        $request  = $this->makeRequest('users', ['Referer' => 'https://example.com/a?b=1']);
+        $request  = $this->makeRequest('users', ['Referer' => 'http://example.com/a?b=1']);
         $response = $this->newFactory($request)->back();
 
         $this->assertSame(302, $response->getStatusCode());
-        $this->assertSame('https://example.com/a?b=1', $response->getHeaderLine('Location'));
+        $this->assertSame('http://example.com/a?b=1', $response->getHeaderLine('Location'));
     }
 
     public function testBackTakesAStatusAndHeaders(): void
     {
-        $request  = $this->makeRequest('users', ['Referer' => 'https://example.com/a']);
+        $request  = $this->makeRequest('users', ['Referer' => 'http://example.com/a']);
         $response = $this->newFactory($request)->back(303, ['X-A' => '1']);
 
         $this->assertSame(303, $response->getStatusCode());
@@ -1196,10 +1197,10 @@ final class ResponseFactoryTest extends CIUnitTestCase
     public function testBackFallsBackToTheStoredPreviousUrlWithoutAReferer(): void
     {
         $this->mockSession();
-        $_SESSION['_ci_previous_url'] = 'https://example.com/previous';
+        $_SESSION['_ci_previous_url'] = 'http://example.com/previous';
         $request                      = $this->makeRequestWithSessionCookie();
 
-        $this->assertSame('https://example.com/previous', $this->newFactory($request)->back()->getHeaderLine('Location'));
+        $this->assertSame('http://example.com/previous', $this->newFactory($request)->back()->getHeaderLine('Location'));
     }
 
     public function testBackUsesTheFallbackWhenThereIsNoRefererOrPreviousUrl(): void
@@ -1217,6 +1218,80 @@ final class ResponseFactoryTest extends CIUnitTestCase
 
         $this->assertSame(site_url('/'), $response->getHeaderLine('Location'));
         $this->assertFalse(BaseService::has('session'), 'The session service was constructed.');
+    }
+
+    #[DataProviderExternal(CsrfFiltersTest::class, 'provideInertiaRequestWithAForeignRefererAndNoPreviousUrlIsRedirectedToTheSiteRoot')]
+    public function testBackSkipsAForeignRefererAndGoesToTheFallbackOrTheSiteRoot(string $referer): void
+    {
+        $this->mockSession();
+        $request = $this->makeRequest('users', ['Referer' => $referer]);
+        $request->setGlobal('cookie', [(string) config('Session')->cookieName => 'abc']);
+
+        $this->assertSame(site_url('/'), $this->newFactory($request)->back()->getHeaderLine('Location'));
+        $this->assertSame(site_url('/home'), $this->newFactory($request)->back(302, [], '/home')->getHeaderLine('Location'));
+    }
+
+    #[DataProviderExternal(CsrfFiltersTest::class, 'provideInertiaRequestWithAForeignRefererAndNoPreviousUrlIsRedirectedToTheSiteRoot')]
+    public function testBackSkipsAForeignRefererForTheOnSiteStoredPreviousUrl(string $referer): void
+    {
+        $this->mockSession();
+        $_SESSION['_ci_previous_url'] = 'http://example.com/previous';
+        $request                      = $this->makeRequest('users', ['Referer' => $referer]);
+        $request->setGlobal('cookie', [(string) config('Session')->cookieName => 'abc']);
+
+        $this->assertSame('http://example.com/previous', $this->newFactory($request)->back()->getHeaderLine('Location'));
+    }
+
+    public function testBackPrefersTheOnSiteRefererOverTheOnSiteStoredPreviousUrl(): void
+    {
+        $this->mockSession();
+        $_SESSION['_ci_previous_url'] = 'http://example.com/stored';
+        $request                      = $this->makeRequest('users', ['Referer' => 'http://example.com/ref']);
+        $request->setGlobal('cookie', [(string) config('Session')->cookieName => 'abc']);
+
+        $this->assertSame('http://example.com/ref', $this->newFactory($request)->back()->getHeaderLine('Location'));
+    }
+
+    public function testBackSkipsAnOffSiteStoredPreviousUrlWithoutAReferer(): void
+    {
+        $this->mockSession();
+        $_SESSION['_ci_previous_url'] = 'http://evil.example/previous';
+        $request                      = $this->makeRequestWithSessionCookie();
+
+        $this->assertSame(site_url('/'), $this->newFactory($request)->back()->getHeaderLine('Location'));
+        $this->assertSame(site_url('/home'), $this->newFactory($request)->back(302, [], '/home')->getHeaderLine('Location'));
+    }
+
+    public function testBackFollowsARefererOnAnAllowedHostname(): void
+    {
+        $config  = config(AppConfig::class);
+        $before  = $config->allowedHostnames;
+        $request = $this->makeRequest('users', ['Referer' => 'http://alt.example/settings']);
+
+        try {
+            $config->allowedHostnames = ['ALT.example'];
+
+            $this->assertSame('http://alt.example/settings', $this->newFactory($request)->back()->getHeaderLine('Location'));
+        } finally {
+            $config->allowedHostnames = $before;
+        }
+    }
+
+    public function testBackFollowsARefererWhoseHostIsWrittenInUpperCase(): void
+    {
+        $request = $this->makeRequest('users', ['Referer' => 'http://EXAMPLE.com/a']);
+
+        $this->assertSame('http://EXAMPLE.com/a', $this->newFactory($request)->back()->getHeaderLine('Location'));
+    }
+
+    public function testBackKeepsTheDevelopersFallbackVerbatimWhenNoSourceIsUsable(): void
+    {
+        $request = $this->makeRequest('users', ['Referer' => 'http://evil.example/x']);
+
+        $this->assertSame(
+            'https://other.example/x',
+            $this->newFactory($request)->back(302, [], 'https://other.example/x')->getHeaderLine('Location'),
+        );
     }
 
     public function testRenderAcceptsAStringBackedEnumAsTheComponent(): void

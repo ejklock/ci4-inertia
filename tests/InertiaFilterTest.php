@@ -27,6 +27,7 @@ use Ejklock\Ci4Inertia\Ssr\HttpGateway;
 use Ejklock\Ci4Inertia\Ssr\Response;
 use PHPUnit\Framework\Assert;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\DataProviderExternal;
 use stdClass;
 
 /**
@@ -440,7 +441,7 @@ final class InertiaFilterTest extends CIUnitTestCase
         ]);
 
         config('Inertia')->storePreviousUrl = false;
-        service('superglobals')->setServer('HTTP_REFERER', 'http://localhost/users');
+        service('superglobals')->setServer('HTTP_REFERER', 'http://example.com/users');
 
         $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest', 'X-Inertia-Version' => self::CURRENT_VERSION])->get('/page');
 
@@ -455,7 +456,7 @@ final class InertiaFilterTest extends CIUnitTestCase
         ]);
 
         config('Inertia')->storePreviousUrl = false;
-        service('superglobals')->setServer('HTTP_REFERER', 'http://localhost/users');
+        service('superglobals')->setServer('HTTP_REFERER', 'http://example.com/users');
 
         $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest'])->call('PUT', 'page');
 
@@ -574,7 +575,7 @@ final class InertiaFilterTest extends CIUnitTestCase
         ]);
 
         config('Inertia')->storePreviousUrl = false;
-        service('superglobals')->setServer('HTTP_REFERER', 'http://localhost/users');
+        service('superglobals')->setServer('HTTP_REFERER', 'http://example.com/users');
 
         $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest', 'X-Inertia-Version' => self::CURRENT_VERSION])->get('/page');
 
@@ -756,7 +757,7 @@ final class InertiaFilterTest extends CIUnitTestCase
     {
         unset($_SESSION);
         BaseService::resetSingle('session');
-        service('superglobals')->setServer('HTTP_REFERER', 'http://localhost/form');
+        service('superglobals')->setServer('HTTP_REFERER', 'http://example.com/form');
         BaseService::resetSingle('request');
 
         $request = service('request')->withMethod('PUT')->setHeader('X-Inertia', 'true');
@@ -821,12 +822,92 @@ final class InertiaFilterTest extends CIUnitTestCase
             ['PUT', 'page', static fn () => service('response')->setBody(''), ['filter' => 'inertia']],
         ]);
 
-        $result = $this->withSession(['_ci_previous_url' => 'http://localhost/list'])
+        $result = $this->withSession(['_ci_previous_url' => 'http://example.com/list'])
             ->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest'])
             ->call('PUT', 'page');
 
         $result->assertStatus(303);
-        $this->assertSame('http://localhost/list', $result->response()->getHeaderLine('Location'));
+        $this->assertSame('http://example.com/list', $result->response()->getHeaderLine('Location'));
+    }
+
+    public function testAnEmptyInertiaGetGoesBackToTheOnSiteStoredUrlEvenWithAnOffSiteReferer(): void
+    {
+        $this->withRoutes([
+            ['GET', 'page', static fn () => service('response')->setBody(''), ['filter' => 'inertia']],
+        ]);
+
+        config('Inertia')->storePreviousUrl = false;
+        service('superglobals')->setServer('HTTP_REFERER', 'http://evil.example/x');
+
+        $result = $this->withSession(['_ci_previous_url' => 'http://example.com/list'])
+            ->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest', 'X-Inertia-Version' => self::CURRENT_VERSION])
+            ->get('/page');
+
+        $this->assertSame('http://example.com/list', $result->response()->getHeaderLine('Location'));
+    }
+
+    public function testAnEmptyInertiaGetPrefersTheOnSiteStoredUrlOverTheOnSiteReferer(): void
+    {
+        $this->withRoutes([
+            ['GET', 'page', static fn () => service('response')->setBody(''), ['filter' => 'inertia']],
+        ]);
+
+        config('Inertia')->storePreviousUrl = false;
+        service('superglobals')->setServer('HTTP_REFERER', 'http://example.com/ref');
+
+        $result = $this->withSession(['_ci_previous_url' => 'http://example.com/stored'])
+            ->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest', 'X-Inertia-Version' => self::CURRENT_VERSION])
+            ->get('/page');
+
+        $this->assertSame('http://example.com/stored', $result->response()->getHeaderLine('Location'));
+    }
+
+    public function testAnEmptyInertiaGetGoesBackToTheOnSiteRefererWhenTheStoredUrlIsOffSite(): void
+    {
+        $this->withRoutes([
+            ['GET', 'page', static fn () => service('response')->setBody(''), ['filter' => 'inertia']],
+        ]);
+
+        config('Inertia')->storePreviousUrl = false;
+        service('superglobals')->setServer('HTTP_REFERER', 'http://example.com/users');
+
+        $result = $this->withSession(['_ci_previous_url' => 'http://evil.example/list'])
+            ->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest', 'X-Inertia-Version' => self::CURRENT_VERSION])
+            ->get('/page');
+
+        $this->assertSame('http://example.com/users', $result->response()->getHeaderLine('Location'));
+    }
+
+    #[DataProviderExternal(CsrfFiltersTest::class, 'provideInertiaRequestWithAForeignRefererAndNoPreviousUrlIsRedirectedToTheSiteRoot')]
+    public function testAnEmptyInertiaGetSkipsAForeignRefererAndGoesToTheSiteRoot(string $referer): void
+    {
+        $this->withRoutes([
+            ['GET', 'page', static fn () => service('response')->setBody(''), ['filter' => 'inertia']],
+        ]);
+
+        config('Inertia')->storePreviousUrl = false;
+        service('superglobals')->setServer('HTTP_REFERER', $referer);
+
+        $result = $this->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest', 'X-Inertia-Version' => self::CURRENT_VERSION])->get('/page');
+
+        $this->assertSame(site_url('/'), $result->response()->getHeaderLine('Location'));
+    }
+
+    public function testAnEmptyInertiaPutWithoutASessionSkipsAnOffSiteRefererWithoutStartingASession(): void
+    {
+        unset($_SESSION);
+        BaseService::resetSingle('session');
+        service('superglobals')->setServer('HTTP_REFERER', 'http://evil.example/form');
+        BaseService::resetSingle('request');
+
+        $request = service('request')->withMethod('PUT')->setHeader('X-Inertia', 'true');
+
+        $response = (new InertiaFilter())->after($request, service('response')->setBody(''));
+
+        $this->assertSame(303, $response->getStatusCode());
+        $this->assertSame(site_url('/'), $response->getHeaderLine('Location'));
+        $this->assertFalse(BaseService::has('session'), 'The session service was constructed.');
+        $this->assertFalse(isset($_SESSION));
     }
 
     public function testAnEmptyInertiaGetWithNoRefererGoesBackToTheSiteBaseUrl(): void
@@ -935,11 +1016,11 @@ final class InertiaFilterTest extends CIUnitTestCase
             ['GET', 'page', static fn () => service('response')->setBody(''), ['filter' => 'inertia']],
         ]);
 
-        $result = $this->withSession(['_ci_previous_url' => 'http://localhost/older'])
+        $result = $this->withSession(['_ci_previous_url' => 'http://example.com/older'])
             ->withHeaders(['X-Inertia' => 'true', 'X-Requested-With' => 'XMLHttpRequest', 'X-Inertia-Version' => self::CURRENT_VERSION])
             ->get('/page');
 
-        $this->assertSame('http://localhost/older', $_SESSION['_ci_previous_url']);
+        $this->assertSame('http://example.com/older', $_SESSION['_ci_previous_url']);
         $this->assertStringEndsWith('/older', $result->response()->getHeaderLine('Location'));
     }
 

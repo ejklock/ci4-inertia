@@ -16,6 +16,7 @@ use Ejklock\Ci4Inertia\Ssr\DisablesSsr;
 use Ejklock\Ci4Inertia\Ssr\ExcludesSsrPaths;
 use Ejklock\Ci4Inertia\Support\Header;
 use Ejklock\Ci4Inertia\Support\SessionKey;
+use Ejklock\Ci4Inertia\Support\SiteOrigin;
 use InvalidArgumentException;
 use LogicException;
 use UnitEnum;
@@ -342,7 +343,9 @@ final class ResponseFactory
     /**
      * Answers a redirect to the previous location: the `Referer` header, else the URL CodeIgniter
      * stored for the last page when the request carries a session, else `$fallback`, else the site
-     * root. The session is not started to look for the stored URL.
+     * root. Only a `Referer` or a stored URL on the site's own origin is followed, so a forged one
+     * cannot send the visitor elsewhere; `$fallback` is the application's own value and is used as
+     * given. The session is not started to look for the stored URL.
      *
      * @param array<string, string> $headers  Headers set on the redirect.
      * @param false|string          $fallback Where to go when no previous location is known; `false`
@@ -350,16 +353,14 @@ final class ResponseFactory
      */
     public function back(int $status = 302, array $headers = [], false|string $fallback = false): RedirectResponse
     {
-        $url = $this->request->getHeaderLine('Referer');
+        $url = SiteOrigin::urlOrNull($this->request->getHeaderLine('Referer'));
 
-        if ($url === '' && $this->hasSession()) {
+        if ($url === null && $this->hasSession()) {
             $stored = session()->get(self::PREVIOUS_URL_SESSION_KEY);
-            $url    = is_string($stored) ? $stored : '';
+            $url    = is_string($stored) ? SiteOrigin::urlOrNull($stored) : null;
         }
 
-        if ($url === '') {
-            $url = $fallback === false ? '/' : $fallback;
-        }
+        $url ??= $fallback === false ? '/' : $fallback;
 
         $response = redirect()->to($url, $status);
 

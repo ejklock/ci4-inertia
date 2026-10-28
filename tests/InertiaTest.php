@@ -301,13 +301,13 @@ final class InertiaTest extends CIUnitTestCase
 
     public function testBackRedirectsThroughTheFacade(): void
     {
-        $factory = new ResponseFactory($this->makeRequest(['Referer' => 'https://example.com/a']), 'app', static fn (): string => 'v1');
+        $factory = new ResponseFactory($this->makeRequest(['Referer' => 'http://example.com/a']), 'app', static fn (): string => 'v1');
         Services::injectMock('inertia', $factory);
 
         $response = Inertia::back(303, ['X-A' => '1'], '/home');
 
         $this->assertSame(303, $response->getStatusCode());
-        $this->assertSame('https://example.com/a', $response->getHeaderLine('Location'));
+        $this->assertSame('http://example.com/a', $response->getHeaderLine('Location'));
         $this->assertSame('1', $response->getHeaderLine('X-A'));
     }
 
