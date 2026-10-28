@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-10-28
+
 ### Fixed
 
 - With `Config\Inertia::$strictProps` on, a prop or flash value that nests arrays and `stdClass` objects deeper than `Config\Format::$jsonEncodeDepth` (512 by default), the depth the JSON response encodes at, is refused with `InvalidArgumentException` instead of exhausting memory, and so is an array that holds itself through a PHP reference. The message names the prop's top-level key, or `flash`, and never a value. With the flag off nothing changes.
@@ -82,6 +84,13 @@ This release ports inertia-laravel 3.5.2 for the Inertia v3 client. To upgrade f
 - The SSR gateway posts the page only to an `http` or `https` hot URL with a host.
 - `inertia_app()` encodes the page with `JSON_HEX_TAG`, so a prop value cannot close the script tag.
 
+## [0.2.1] - 2026-10-28
+
+### Security
+
+- `InertiaCsrfFilter` now answers a refused Inertia visit whose `Referer` or stored previous URL holds a backslash or a control character with a 303 to the next on-site URL. On 0.2.0 the tab and backslash cases redirected to that URL, which PHP and a browser read as two different hosts; `\x00`, `\x1f`, `\x7f` and a newline made `redirect()->to()` throw `InvalidArgumentException`, a 500.
+- `render()` and `share()` now refuse an object nested at any depth inside an array prop, and the value a prop object resolves to is checked the same way (a plain `stdClass` is allowed there), so an entity never reaches the page through a nested array or a callback. An app that nests an object in a prop now gets an `InvalidArgumentException` naming the dot path. An array or `stdClass` nested deeper than the app's `Config\Format::$jsonEncodeDepth` (512 by default), the depth its JSON response encodes at, is refused too, naming the limit and only the top-level prop key; that also ends the walk on an array that holds itself through a reference.
+
 ## [0.2.0] - 2026-10-26
 
 ### Added
@@ -111,8 +120,10 @@ This release ports inertia-laravel 3.5.2 for the Inertia v3 client. To upgrade f
 - History encryption (`encryptHistory` setting, `ResponseFactory::encryptHistory()`) and one-shot history clearing (`ResponseFactory::clearHistory()`).
 - Test helpers `InertiaTestTrait` and `AssertableInertia` for feature tests.
 
-[Unreleased]: https://github.com/ejklock/ci4-inertia/compare/v3.1.0...HEAD
+[Unreleased]: https://github.com/ejklock/ci4-inertia/compare/v3.1.1...HEAD
+[3.1.1]: https://github.com/ejklock/ci4-inertia/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/ejklock/ci4-inertia/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/ejklock/ci4-inertia/compare/v0.2.0...v3.0.0
+[0.2.1]: https://github.com/ejklock/ci4-inertia/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ejklock/ci4-inertia/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/ejklock/ci4-inertia/releases/tag/v0.1.0
